@@ -104,3 +104,35 @@ type MessageCreated struct {
 	Private           bool               `json:"private"`
 	Conversation      Conversation       `json:"conversation"`
 }
+
+// GetConversationsResponse는 대화 목록 조회 API 응답 구조체입니다
+type GetConversationsResponse struct {
+	Payload []Conversation `json:"payload"`
+	Meta    Meta           `json:"meta"`
+}
+
+// GetContactsResponse는 연락처 목록 조회 API 응답 구조체입니다
+type GetContactsResponse struct {
+	Payload []Contact `json:"payload"`
+	Meta    Meta      `json:"meta"`
+}
+
+// CreateMessageResponse는 메시지 생성 API 응답 구조체입니다
+type CreateMessageResponse struct {
+	ID                MessageID          `json:"id"`
+	Content           string             `json:"content"`
+	CreatedAt         string             `json:"created_at"`
+	MessageType       string             `json:"message_type"`
+	ContentType       string             `json:"content_type"`
+	ContentAttributes *ContentAttributes `json:"content_attributes"`
+	Private           bool               `json:"private"`
+}
+
+// Meta는 페이지네이션 메타데이터 구조체입니다
+type Meta struct {
+	Count        int `json:"count"`
+	CurrentPage  int `json:"current_page"`
+	PerPage      int `json:"per_page"`
+	TotalCount   int `json:"total_count"`
+	TotalPages   int `json:"total_pages"`
+}

@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/rs/zerolog"
 	"maunium.net/go/mautrix/id"
@@ -49,9 +50,15 @@ func CreateChatwootAPI(baseURL string, accountID AccountID, inboxID InboxID, acc
 		InboxID:     inboxID,
 		AccessToken: accessToken,
 		Client: &http.Client{
+			Timeout: 30 * time.Second,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				if len(via) >= 10 {
 					return errors.New("too many (>=10) redirects, cancelling request")
+				}
+				if len(via) > 0 {
+					for key, values := range via[len(via)-1].Header {
+						req.Header[key] = values
+					}
 				}
 				return nil
 			},
@@ -60,8 +67,7 @@ func CreateChatwootAPI(baseURL string, accountID AccountID, inboxID InboxID, acc
 }
 
 func (api *ChatwootAPI) DoRequest(req *http.Request) (*http.Response, error) {
-	req.Header.Add("API_ACCESS_TOKEN", api.AccessToken)
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Add("Api-Access-Token", api.AccessToken)
 	return api.Client.Do(req)
 }
 
@@ -76,8 +82,8 @@ func (api *ChatwootAPI) MakeURI(endpoint string) string {
 
 func (api *ChatwootAPI) CreateContact(ctx context.Context, userID id.UserID, name string) (ContactID, error) {
 	log := zerolog.Ctx(ctx).With().
-		Str("component", "create_contact").
-		Stringer("user_id", userID).
+		Str("user_id", userID.String()).
+		Str("name", name).
 		Logger()
 
 	if name == "" {
@@ -91,10 +97,10 @@ func (api *ChatwootAPI) CreateContact(ctx context.Context, userID id.UserID, nam
 	}
 
 	log.Info().Str("name", name).Msg("Creating contact")
-	payload := CreateContactPayload{
-		InboxID:    api.InboxID,
-		Name:       name,
-		Identifier: name,
+	payload := map[string]interface{}{
+		"inbox_id": api.InboxID,
+		"name":     name,
+		"identifier": userID.String(),
 	}
 	jsonValue, _ := json.Marshal(payload)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, api.MakeURI("contacts"), bytes.NewBuffer(jsonValue))
@@ -102,6 +108,7 @@ func (api *ChatwootAPI) CreateContact(ctx context.Context, userID id.UserID, nam
 		log.Err(err).Msg("Failed to create request")
 		return 0, err
 	}
+	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := api.DoRequest(req)
 	if err != nil {
@@ -207,6 +214,7 @@ func (api *ChatwootAPI) CreateConversation(ctx context.Context, sourceID string,
 	if err != nil {
 		return nil, err
 	}
+	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := api.DoRequest(req)
 	if err != nil {
@@ -270,6 +278,7 @@ func (api *ChatwootAPI) SetConversationLabels(ctx context.Context, conversationI
 	if err != nil {
 		return err
 	}
+	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := api.DoRequest(req)
 	if err != nil {
@@ -290,6 +299,7 @@ func (api *ChatwootAPI) SetConversationCustomAttributes(ctx context.Context, con
 	if err != nil {
 		return err
 	}
+	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := api.DoRequest(req)
 	if err != nil {
@@ -312,6 +322,7 @@ func (api *ChatwootAPI) doSendTextMessage(ctx context.Context, conversationID Co
 		log.Err(err).Msg("Failed to create request")
 		return nil, err
 	}
+	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := api.DoRequest(req)
 	if err != nil {
@@ -348,6 +359,8 @@ func (api *ChatwootAPI) ToggleStatus(ctx context.Context, conversationID Convers
 	if err != nil {
 		return err
 	}
+	req.Header.Set("Content-Type", "application/json")
+
 	resp, err := api.DoRequest(req)
 	if err != nil {
 		return err
@@ -362,8 +375,16 @@ func (api *ChatwootAPI) ToggleStatus(ctx context.Context, conversationID Convers
 var quoteEscaper = strings.NewReplacer("\\", "\\\\", `"`, "\\\"")
 
 func (api *ChatwootAPI) SendAttachmentMessage(ctx context.Context, conversationID ConversationID, filename string, mimeType string, fileData io.Reader, messageType MessageType) (*Message, error) {
+	// 성공적인 curl 요청과 정확히, 가능한 모든 측면에서 똑같이 만듭니다
 	bodyBuf := &bytes.Buffer{}
 	bodyWriter := multipart.NewWriter(bodyBuf)
+
+	// 폼 필드 순서를 curl과 동일하게 맞춥니다
+	messageTypeFieldWriter, err := bodyWriter.CreateFormField("message_type")
+	if err != nil {
+		return nil, err
+	}
+	messageTypeFieldWriter.Write([]byte(messageType))
 
 	contentFieldWriter, err := bodyWriter.CreateFormField("content")
 	if err != nil {
@@ -377,12 +398,7 @@ func (api *ChatwootAPI) SendAttachmentMessage(ctx context.Context, conversationI
 	}
 	privateFieldWriter.Write([]byte("false"))
 
-	messageTypeFieldWriter, err := bodyWriter.CreateFormField("message_type")
-	if err != nil {
-		return nil, err
-	}
-	messageTypeFieldWriter.Write([]byte(messageType))
-
+	// 파일 첨부
 	h := make(textproto.MIMEHeader)
 	h.Set(
 		"Content-Disposition",
@@ -397,33 +413,63 @@ func (api *ChatwootAPI) SendAttachmentMessage(ctx context.Context, conversationI
 		return nil, err
 	}
 
-	// Copy the file data into the form.
+	// 파일 데이터 복사
 	io.Copy(fileWriter, fileData)
 
 	bodyWriter.Close()
 
+	// 요청 생성
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, api.MakeURI(fmt.Sprintf("conversations/%d/messages", conversationID)), bodyBuf)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Add("API_ACCESS_TOKEN", api.AccessToken)
+	
+	// Content-Type 및 API 토큰 헤더 설정 - curl과 정확히 동일하게
 	req.Header.Set("Content-Type", bodyWriter.FormDataContentType())
+	req.Header.Set("Api-Access-Token", api.AccessToken)
+	
+	// 디버그 로깅
+	log := zerolog.Ctx(ctx)
+	if log != nil {
+		log.Debug().Str("url", req.URL.String()).Str("method", req.Method).
+			Str("content-type", req.Header.Get("Content-Type")).
+			Str("api-access-token", req.Header.Get("Api-Access-Token")).
+			Msg("첨부 파일 업로드 요청 전송 (curl과 동일한 방식)")
+	}
 
-	resp, err := api.Client.Do(req)
+	// curl과 동일하게 직접 http 클라이언트 사용하되 리다이렉트 시 헤더 복사 추가
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return errors.New("too many (>=10) redirects, cancelling request")
+			}
+			// 이전 요청의 헤더를 복사
+			if len(via) > 0 {
+				for key, values := range via[len(via)-1].Header {
+					req.Header[key] = values
+				}
+			}
+			return nil
+		},
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
+	
+	// 응답 처리
 	if resp.StatusCode != 200 {
 		content, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("POST conversations/%d/messages returned non-200 status code: %d: %s", conversationID, resp.StatusCode, string(content))
 	}
 
-	decoder := json.NewDecoder(resp.Body)
 	var message Message
-	err = decoder.Decode(&message)
+	err = json.NewDecoder(resp.Body).Decode(&message)
 	if err != nil {
 		return nil, err
 	}
+	
 	return &message, nil
 }
 
@@ -465,5 +511,53 @@ func (api *ChatwootAPI) DeleteMessage(ctx context.Context, conversationID Conver
 		return fmt.Errorf("GET attachment returned non-200 status code: %d", resp.StatusCode)
 	}
 
+	return nil
+}
+
+func (api *ChatwootAPI) CreateOrGetConversation(ctx context.Context, contactID ContactID, sourceID string) (ConversationID, error) {
+	values := map[string]any{
+		"source_id":  sourceID,
+		"inbox_id":   api.InboxID,
+		"contact_id": contactID,
+		"status":     "open",
+	}
+	jsonValue, _ := json.Marshal(values)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, api.MakeURI("conversations"), bytes.NewBuffer(jsonValue))
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := api.DoRequest(req)
+	if err != nil {
+		return 0, err
+	}
+	if resp.StatusCode != 200 {
+		content, _ := io.ReadAll(resp.Body)
+		return 0, fmt.Errorf("POST conversations returned non-200 status code: %d: %s", resp.StatusCode, string(content))
+	}
+
+	var conversation Conversation
+	err = json.NewDecoder(resp.Body).Decode(&conversation)
+	return conversation.ID, err
+}
+
+func (api *ChatwootAPI) CloseConversation(ctx context.Context, conversationID ConversationID) error {
+	values := map[string]any{"status": "resolved"}
+	jsonValue, _ := json.Marshal(values)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, api.MakeURI(fmt.Sprintf("conversations/%d/toggle_status", conversationID)), bytes.NewBuffer(jsonValue))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := api.DoRequest(req)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode != 200 {
+		content, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("POST conversations/%d/toggle_status returned non-200 status code: %d: %s", conversationID, resp.StatusCode, string(content))
+	}
 	return nil
 }

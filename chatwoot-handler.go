@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/hlog"
@@ -48,19 +49,21 @@ func SendMessage(ctx context.Context, roomID id.RoomID, content *event.MessageEv
 	return r, err
 }
 
-func HandleWebhook(_ http.ResponseWriter, r *http.Request) {
+func HandleWebhook(w http.ResponseWriter, r *http.Request) {
 	log := hlog.FromRequest(r)
-	ctx := log.WithContext(context.Background())
-
+	
 	webhookBody, err := io.ReadAll(r.Body)
 	if err != nil {
 		log.Err(err).Msg("failed to read webhook body")
+		w.WriteHeader(http.StatusBadRequest)
+		return
 	}
 
 	var eventJSON map[string]any
 	err = json.Unmarshal(webhookBody, &eventJSON)
 	if err != nil {
 		log.Err(err).Msg("error decoding webhook body")
+		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 
@@ -71,20 +74,30 @@ func HandleWebhook(_ http.ResponseWriter, r *http.Request) {
 			err = json.Unmarshal(webhookBody, &mc)
 			if err != nil {
 				log.Err(err).Msg("error decoding message created webhook body")
+				w.WriteHeader(http.StatusBadRequest)
 				break
 			}
 			conversationID := mc.Conversation.ID
-			err = HandleMessageCreated(ctx, mc)
-			if err != nil {
-				DoRetry(ctx, fmt.Sprintf("send private error message to %d for %+v", conversationID, err), func(ctx context.Context) (*chatwootapi.Message, error) {
-					return chatwootAPI.SendPrivateMessage(
-						ctx,
-						conversationID,
-						fmt.Sprintf("**Error occurred while handling Chatwoot message. The message may not have been sent to Matrix!**\n\nError: %+v", err))
-				})
-			}
+			
+			// 비동기적으로 메시지 처리
+			go func() {
+				errCtx := log.WithContext(context.Background())
+				err := HandleMessageCreated(errCtx, mc)
+				if err != nil {
+					DoRetry(errCtx, fmt.Sprintf("send private error message to %d for %+v", conversationID, err), func(ctx context.Context) (*chatwootapi.Message, error) {
+						return chatwootAPI.SendPrivateMessage(
+							ctx,
+							conversationID,
+							fmt.Sprintf("**Error occurred while handling Chatwoot message. The message may not have been sent to Matrix!**\n\nError: %+v", err))
+					})
+				}
+			}()
 		}
 	}
+	
+	// Always respond with 200 OK for webhook calls to prevent timeouts
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(`{"status":"ok"}`))
 }
 
 func handleAttachment(ctx context.Context, roomID id.RoomID, chatwootMessageID chatwootapi.MessageID, chatwootAttachment chatwootapi.Attachment) (*mautrix.RespSendEvent, error) {
@@ -241,6 +254,10 @@ func HandleMessageCreated(ctx context.Context, mc chatwootapi.MessageCreated) er
 		Str("component", "handle_message_created").
 		Int("message_id", int(mc.ID)).
 		Int("conversation_id", int(mc.Conversation.ID)).Logger()
+	
+	// 컨텍스트 타임아웃 추가
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 	ctx = log.WithContext(ctx)
 
 	// Skip private messages

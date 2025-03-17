@@ -2,69 +2,55 @@ package main
 
 import (
 	"context"
-	_ "strconv"
+	"fmt"
 	"time"
 
 	"github.com/rs/zerolog"
 	"github.com/sethvargo/go-retry"
 )
 
-func DoRetry[T any](ctx context.Context, description string, fn func(context.Context) (*T, error)) (*T, error) {
-	log := zerolog.Ctx(ctx).With().Str("do_retry", description).Logger()
+func DoRetry[T any](ctx context.Context, action string, fn func(context.Context) (T, error)) (T, error) {
+	var result T
 	var err error
+	log := zerolog.Ctx(ctx)
+
 	b := retry.NewFibonacci(1 * time.Second)
 	b = retry.WithMaxRetries(5, b)
-	attemptNum := 0
-	for {
-		attemptNum++
-		attemptLogger := log.With().Int("attempt", attemptNum).Logger()
-		attemptLogger.Debug().Msg("trying")
-		var val *T
-		val, err = fn(attemptLogger.WithContext(ctx))
-		if err == nil {
-			attemptLogger.Debug().Msg("succeeded")
-			return val, nil
+	b = retry.WithCappedDuration(5*time.Minute, b)
+	err = retry.Do(ctx, b, func(ctx context.Context) error {
+		result, err = fn(ctx)
+		if err != nil {
+			log.Warn().Err(err).Str("action", action).Msg("Attempt failed, retrying")
+			return retry.RetryableError(err)
 		}
-		nextDuration, stop := b.Next()
-		attemptLogger.Info().Err(err).
-			Float64("retry_in_sec", nextDuration.Seconds()).
-			Msg("failed")
-		if stop {
-			attemptLogger.Warn().Err(err).
-				Msg("failed. Retry limit reached. Will not retry.")
-			break
-		}
-		time.Sleep(nextDuration)
-	}
-	return nil, err
+		return nil
+	})
+	return result, err
 }
 
-func DoRetryArr[T any](ctx context.Context, description string, fn func(context.Context) ([]T, error)) ([]T, error) {
-	log := zerolog.Ctx(ctx).With().Str("do_retry", description).Logger()
+func DoRetryArr[T any](ctx context.Context, action string, fn func(context.Context) ([]T, error)) ([]T, error) {
+	var result []T
 	var err error
+	log := zerolog.Ctx(ctx)
+
 	b := retry.NewFibonacci(1 * time.Second)
 	b = retry.WithMaxRetries(5, b)
-	attemptNum := 0
-	for {
-		attemptNum++
-		attemptLogger := log.With().Int("attempt", attemptNum).Logger()
-		attemptLogger.Debug().Msg("trying")
-		var val []T
-		val, err = fn(attemptLogger.WithContext(ctx))
-		if err == nil {
-			attemptLogger.Debug().Msg("succeeded")
-			return val, nil
+	b = retry.WithCappedDuration(5*time.Minute, b)
+	err = retry.Do(ctx, b, func(ctx context.Context) error {
+		result, err = fn(ctx)
+		if err != nil {
+			log.Warn().Err(err).Str("action", action).Msg("Attempt failed, retrying")
+			return retry.RetryableError(err)
 		}
-		nextDuration, stop := b.Next()
-		attemptLogger.Info().Err(err).
-			Float64("retry_in_sec", nextDuration.Seconds()).
-			Msg("failed")
-		if stop {
-			attemptLogger.Warn().Err(err).
-				Msg("failed. Retry limit reached. Will not retry.")
-			break
-		}
-		time.Sleep(nextDuration)
+		return nil
+	})
+	return result, err
+}
+
+// truncateString은 문자열을 지정된 길이로 잘라내고 필요시 '...'를 붙입니다.
+func truncateString(s string, maxLength int) string {
+	if len(s) <= maxLength {
+		return s
 	}
-	return nil, err
+	return fmt.Sprintf("%s...", s[:maxLength-3])
 }

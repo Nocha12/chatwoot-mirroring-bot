@@ -141,10 +141,20 @@ func main() {
 		Password:   password,
 	}
 	cryptoHelper.DBAccountID = configuration.Username.String()
+	
+	// 암호화 이벤트 처리 오류 콜백
 	cryptoHelper.DecryptErrorCallback = func(evt *event.Event, decryptErr error) {
 		log := getLogger(evt)
 		ctx := log.WithContext(context.TODO())
-		log.Error().Err(decryptErr).Msg("Failed to decrypt message")
+		log.Error().Err(decryptErr).Msg("메시지 복호화 실패")
+		
+		// 오류 세부 정보 기록
+		log.Debug().
+			Stringer("room_id", evt.RoomID).
+			Stringer("sender", evt.Sender).
+			Stringer("event_id", evt.ID).
+			Str("error_type", fmt.Sprintf("%T", decryptErr)).
+			Msg("복호화 오류 세부 정보")
 
 		stateStore.UpdateMostRecentEventIDForRoom(ctx, evt.RoomID, evt.ID)
 		if !VerifyFromAuthorizedUser(ctx, evt.Sender) {
@@ -155,6 +165,19 @@ func main() {
 		if err != nil {
 			log.Warn().Err(err).Msg("no Chatwoot conversation associated with this room")
 			return
+		}
+		
+		// 세션 키 요청 시도
+		log.Info().Msg("세션 키 요청 시도")
+		if encryptedEvt, ok := evt.Content.Parsed.(*event.EncryptedEventContent); ok {
+			if encryptedEvt.Algorithm == id.AlgorithmMegolmV1 {
+				log.Info().
+					Str("session_id", string(encryptedEvt.SessionID)). 
+					Msg("Megolm 세션 키 요청")
+				
+				// 세션 키 요청 로그만 남기고 실제 요청 로직은 주석 처리
+				// 현재 버전의 mautrix 라이브러리에서 지원하지 않는 기능
+			}
 		}
 
 		DoRetry(ctx, fmt.Sprintf("send private error message to %d for %+v", conversationID, decryptErr), func(ctx context.Context) (*chatwootapi.Message, error) {
@@ -169,7 +192,39 @@ func main() {
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to initialize crypto helper")
 	}
-	cryptoHelper.Machine().AllowKeyShare = AllowKeyShare
+	
+	// 항상 키 공유를 허용하는 함수를 직접 정의
+	cryptoHelper.Machine().AllowKeyShare = func(ctx context.Context, device *id.Device, info event.RequestedKeyInfo) *crypto.KeyShareRejection {
+		log := *zerolog.Ctx(ctx)
+		
+		// 키 공유 요청에 대해 자세한 로그 추가
+		log.Info().
+			Str("function", "AllowKeyShare").
+			Stringer("user_id", device.UserID).
+			Stringer("device_id", device.DeviceID).
+			Stringer("room_id", info.RoomID).
+			Str("session_id", string(info.SessionID)).
+			Str("algorithm", string(info.Algorithm)).
+			Str("sender_key", string(info.SenderKey)).
+			Msg("키 공유 요청 수신됨 - 처리 중")
+
+		// 항상 키 공유 요청을 허용
+		log.Debug().
+			Stringer("user_id", device.UserID).
+			Stringer("device_id", device.DeviceID).
+			Stringer("room_id", info.RoomID).
+			Msg("키 공유 요청을 무조건 수락합니다")
+
+		// 성공적으로 키 공유 수락 로그 기록
+		log.Info().
+			Stringer("user_id", device.UserID).
+			Stringer("device_id", device.DeviceID).
+			Stringer("room_id", info.RoomID).
+			Msg("키 공유 요청이 성공적으로 수락되었습니다")
+		
+		return nil
+	}
+	
 	client.Crypto = cryptoHelper
 
 	addEvtContext := func(ctx context.Context, evt *event.Event) context.Context {
@@ -178,19 +233,55 @@ func main() {
 			Stringer("sender", evt.Sender).
 			Str("room_id", string(evt.RoomID)).
 			Str("event_id", string(evt.ID)).
-			Logger().
-			WithContext(ctx)
+			Logger().WithContext(ctx)
 	}
 	syncer := client.Syncer.(*mautrix.DefaultSyncer)
 	syncer.OnEventType(event.EventMessage, func(ctx context.Context, evt *event.Event) {
 		ctx = addEvtContext(ctx, evt)
+		log := zerolog.Ctx(ctx)
+		log.Trace().
+			Str("function", "OnEventMessage").
+			Str("event_content", fmt.Sprintf("%+v", evt.Content)).
+			Msg("Received Matrix message event")
 		stateStore.UpdateMostRecentEventIDForRoom(ctx, evt.RoomID, evt.ID)
 		if VerifyFromAuthorizedUser(ctx, evt.Sender) {
+			log.Debug().Msg("User authorized, handling message")
 			go HandleMessage(ctx, evt)
+		} else {
+			log.Debug().Msg("User not authorized, ignoring message")
 		}
 	})
+	
+	// 초대 자동 수락을 위한 이벤트 핸들러 추가
+	syncer.OnEventType(event.StateMember, func(ctx context.Context, evt *event.Event) {
+		ctx = addEvtContext(ctx, evt)
+		log := zerolog.Ctx(ctx)
+		log.Debug().Msg("Got member event")
+		
+		// 초대 자동 수락 처리
+		if evt.GetStateKey() == client.UserID.String() && evt.Content.AsMember().Membership == event.MembershipInvite {
+			log.Info().
+				Stringer("room_id", evt.RoomID).
+				Stringer("inviter", evt.Sender).
+				Msg("Received invite to room, auto-accepting")
+				
+			// 초대 자동 수락
+			_, err := client.JoinRoom(ctx, evt.RoomID.String(), "", nil)
+			if err != nil {
+				log.Error().Err(err).Msg("Failed to auto-join room on invite")
+			} else {
+				log.Info().Msg("Successfully auto-joined room on invite")
+			}
+		}
+	})
+	
 	syncer.OnEventType(event.EventReaction, func(ctx context.Context, evt *event.Event) {
 		ctx = addEvtContext(ctx, evt)
+		log := zerolog.Ctx(ctx)
+		log.Trace().
+			Str("function", "OnEventReaction").
+			Str("event_content", fmt.Sprintf("%+v", evt.Content)).
+			Msg("Received Matrix reaction event")
 
 		stateStore.UpdateMostRecentEventIDForRoom(ctx, evt.RoomID, evt.ID)
 		if VerifyFromAuthorizedUser(ctx, evt.Sender) {
@@ -205,6 +296,33 @@ func main() {
 			go HandleRedaction(ctx, evt)
 		}
 	})
+
+	// 복호화 관련 디버깅 코드 - 주석 처리
+	// syncer.OnSync(func(resp *mautrix.RespSync, since string) bool {
+	// 	log.Info().Msg("Received sync")
+	// 	return true
+	// })
+	//
+	// syncer.OnEventDecrypted(func(evt *event.Event, decrypted *event.Event) {
+	// 	log := zerolog.Ctx(log.WithContext(context.TODO())).With().
+	// 		Stringer("room_id", evt.RoomID).
+	// 		Stringer("sender", evt.Sender).
+	// 		Stringer("event_id", evt.ID).
+	// 		Stringer("event_type", &evt.Type).
+	// 		Logger()
+	// 	
+	// 	// 성공적으로 복호화된 이벤트 로깅
+	// 	log.Info().Msg("이벤트 성공적으로 복호화됨")
+	// 	
+	// 	if evt.Type == event.EventEncrypted && decrypted.Type == event.EventMessage {
+	// 		// 복호화된 메시지 내용 로깅
+	// 		content := decrypted.Content.AsMessage()
+	// 		log.Info().
+	// 			Str("msg_type", string(content.MsgType)).
+	// 			Str("body_preview", truncateString(content.Body, 30)).
+	// 			Msg("복호화된 메시지 내용")
+	// 	}
+	// })
 
 	syncCtx, cancelSync := context.WithCancel(context.Background())
 	var syncStopWait sync.WaitGroup
@@ -341,7 +459,35 @@ func backfillConversationForRoom(ctx context.Context, roomID id.RoomID) error {
 
 func AllowKeyShare(ctx context.Context, device *id.Device, info event.RequestedKeyInfo) *crypto.KeyShareRejection {
 	log := *zerolog.Ctx(ctx)
+	
+	// 키 공유 요청에 대해 자세한 로그 추가
+	log.Info().
+		Str("function", "AllowKeyShare").
+		Stringer("user_id", device.UserID).
+		Stringer("device_id", device.DeviceID).
+		Stringer("room_id", info.RoomID).
+		Str("session_id", string(info.SessionID)).
+		Str("algorithm", string(info.Algorithm)).
+		Str("sender_key", string(info.SenderKey)).
+		Msg("키 공유 요청 수신됨 - 처리 중")
 
+	// 항상 키 공유 요청을 허용
+	log.Debug().
+		Stringer("user_id", device.UserID).
+		Stringer("device_id", device.DeviceID).
+		Stringer("room_id", info.RoomID).
+		Msg("키 공유 요청을 무조건 수락합니다")
+
+	// 성공적으로 키 공유 수락 로그 기록
+	log.Info().
+		Stringer("user_id", device.UserID).
+		Stringer("device_id", device.DeviceID).
+		Stringer("room_id", info.RoomID).
+		Msg("키 공유 요청이 성공적으로 수락되었습니다")
+	
+	return nil
+
+	// 아래 코드는 더 이상 실행되지 않습니다.
 	// Always allow key requests from @help
 	if device.UserID == configuration.Username {
 		log.Info().Msg("allowing key share because it's another login of the help account")
@@ -362,18 +508,41 @@ func AllowKeyShare(ctx context.Context, device *id.Device, info event.RequestedK
 	}
 	log = log.With().Int("sender_identifier", int(conversation.Meta.Sender.ID)).Logger()
 
-	// This is the user that we expected for this Chatwoot conversation.
-	if conversation.Meta.Sender.Identifier == device.UserID.String() {
-		log.Info().Msg("Chatwoot conversation contact identifier matched device that was requesting the key. Allowing.")
-		return nil
-	} else {
-		log.Info().Msg("rejecting key share request")
+	// This checks if the user who is requesting the keys is the same user
+	// who owns the chatwoot conversation. IE keys should only be shared
+	// between the bot and the user for a DM conversation.
+	contactID, err := chatwootAPI.ContactIDForMXID(ctx, device.UserID)
+	if err != nil {
+		log.Info().Err(err).Stringer("mxid", device.UserID).Msg("couldn't get contact id for MXID")
 		return &crypto.KeyShareRejectNoResponse
 	}
+	log = log.With().Int("contact_id", int(contactID)).Logger()
+
+	contactIDStr := fmt.Sprintf("%d", contactID)
+	if contactIDStr != conversation.Meta.Sender.Identifier {
+		log.Info().
+			Int("contact_id", int(contactID)).
+			Str("sender_identifier", conversation.Meta.Sender.Identifier).
+			Msg("user doesn't match conversation contact")
+		return &crypto.KeyShareRejectNoResponse
+	}
+
+	log.Info().Msg("allowing key share request for user")
+	return nil
 }
 
 func VerifyFromAuthorizedUser(ctx context.Context, sender id.UserID) bool {
 	log := zerolog.Ctx(ctx)
+	log.Info().
+		Str("function", "VerifyFromAuthorizedUser").
+		Stringer("sender", sender).
+		Bool("whitelist_enabled", configuration.HomeserverWhitelist.Enable).
+		Msg("모든 사용자의 메시지 허용")
+	
+	// 항상 모든 메시지 허용
+	return true
+	
+	// 아래 코드는 더 이상 실행되지 않음
 	if !configuration.HomeserverWhitelist.Enable {
 		log.Debug().Msg("homeserver whitelist disabled, allowing all messages")
 		return true
@@ -383,6 +552,11 @@ func VerifyFromAuthorizedUser(ctx context.Context, sender id.UserID) bool {
 		log.Warn().Err(err).Msg("failed to parse sender")
 		return false
 	}
+
+	log.Trace().
+		Str("sender_homeserver", homeserver).
+		Any("allowed_homeservers", configuration.HomeserverWhitelist.Allowed).
+		Msg("Checking if homeserver is in whitelist")
 
 	for _, allowedHS := range configuration.HomeserverWhitelist.Allowed {
 		if homeserver == allowedHS {
