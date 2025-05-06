@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
-	"strconv"
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -166,49 +165,38 @@ func (d *Database) GetChatwootConversationIDFromMatrixRoom(ctx context.Context, 
 }
 
 // GetMatrixRoomFromChatwootConversation은 Chatwoot 대화 ID와 계정 ID로부터 Matrix 방 ID를 찾습니다.
-func (d *Database) GetMatrixRoomFromChatwootConversation(ctx context.Context, conversationID chatwootapi.ConversationID, accountID string) (id.RoomID, string, error) {
-	accID, err := strconv.Atoi(accountID)
-	if err != nil {
-		return "", "", fmt.Errorf("계정 ID 변환 실패: %w", err)
-	}
-
+func (d *Database) GetMatrixRoomFromChatwootConversation(ctx context.Context, conversationID chatwootapi.ConversationID, accountID chatwootapi.AccountID) (id.RoomID, chatwootapi.AccountID, error) {
 	row := d.DB.QueryRowContext(ctx, `
-		SELECT matrix_room_id, chatwoot_message_id
+		SELECT matrix_room_id, chatwoot_account_id
 		  FROM chatwoot_conversation_to_matrix_room
 		 WHERE chatwoot_conversation_id = $1 AND chatwoot_account_id = $2`,
-		int(conversationID), accID)
+		int(conversationID), int(accountID))
 
 	var roomID id.RoomID
-	var mostRecentMessageID string
-	err = row.Scan(&roomID, &mostRecentMessageID)
+	var dbAccountID int
+	err := row.Scan(&roomID, &dbAccountID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return "", "", ErrNotFound
+			return "", 0, ErrNotFound
 		}
-		return "", "", fmt.Errorf("Matrix 방 ID 조회 실패: %w", err)
+		return "", 0, fmt.Errorf("Matrix 방 ID 조회 실패: %w", err)
 	}
 
-	return roomID, mostRecentMessageID, nil
+	return roomID, chatwootapi.AccountID(dbAccountID), nil
 }
 
 // StoreMatrixRoomForChatwootConversation은 Matrix 방과 Chatwoot 대화 매핑을 저장합니다.
-func (d *Database) StoreMatrixRoomForChatwootConversation(ctx context.Context, roomID id.RoomID, conversationID chatwootapi.ConversationID, accountID string) error {
-	accID, err := strconv.Atoi(accountID)
-	if err != nil {
-		return fmt.Errorf("계정 ID 변환 실패: %w", err)
-	}
-
-	_, err = d.DB.ExecContext(ctx, `
+func (d *Database) StoreMatrixRoomForChatwootConversation(ctx context.Context, roomID id.RoomID, conversationID chatwootapi.ConversationID, accountID chatwootapi.AccountID) error {
+	_, err := d.DB.ExecContext(ctx, `
 		INSERT INTO chatwoot_conversation_to_matrix_room
-		(matrix_room_id, chatwoot_conversation_id, chatwoot_account_id)
-		VALUES ($1, $2, $3)
-		ON CONFLICT (chatwoot_conversation_id, chatwoot_account_id) DO UPDATE
-		SET matrix_room_id = $1`, roomID, int(conversationID), accID)
+			(matrix_room_id, chatwoot_conversation_id, chatwoot_account_id, chatwoot_message_id)
+			VALUES ($1, $2, $3, $4)
+		ON CONFLICT (matrix_room_id) DO UPDATE
+			SET chatwoot_conversation_id = EXCLUDED.chatwoot_conversation_id,
+				chatwoot_account_id = EXCLUDED.chatwoot_account_id
+	`, roomID, int(conversationID), int(accountID), "")
 
-	if err != nil {
-		return fmt.Errorf("대화-방 매핑 저장 실패: %w", err)
-	}
-	return nil
+	return err
 }
 
 // GetAccountAndInboxIDForConversation은 방 ID로부터 계정 ID와 인박스 ID를 찾습니다.
@@ -218,26 +206,27 @@ func (d *Database) GetAccountAndInboxIDForConversation(ctx context.Context, room
 		  FROM chatwoot_conversation_to_matrix_room
 		 WHERE matrix_room_id = $1`, roomID)
 
-	var accountID, inboxID int
+	var accountID int
+	var inboxID int
 	err := row.Scan(&accountID, &inboxID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return 0, 0, ErrNotFound
 		}
-		return 0, 0, fmt.Errorf("계정/인박스 ID 조회 실패: %w", err)
+		return 0, 0, fmt.Errorf("계정 및 인박스 ID 조회 실패: %w", err)
 	}
 
 	return chatwootapi.AccountID(accountID), chatwootapi.InboxID(inboxID), nil
 }
 
 // GetChatwootMessageIDsForMatrixEventID는 Matrix 이벤트 ID에 대한 Chatwoot 메시지 ID와 계정 ID를 반환합니다.
-func (d *Database) GetChatwootMessageIDsForMatrixEventID(ctx context.Context, eventID id.EventID) ([]chatwootapi.MessageID, int, error) {
+func (d *Database) GetChatwootMessageIDsForMatrixEventID(ctx context.Context, eventID id.EventID) ([]chatwootapi.MessageID, chatwootapi.AccountID, error) {
 	rows, err := d.DB.QueryContext(ctx, `
 		SELECT chatwoot_message_id, chatwoot_account_id
 		  FROM chatwoot_message_to_matrix_event
 		 WHERE matrix_event_id = $1`, eventID)
 	if err != nil {
-		return nil, 0, fmt.Errorf("Chatwoot 메시지 ID 조회 실패: %w", err)
+		return nil, 0, err
 	}
 	defer rows.Close()
 
@@ -248,20 +237,21 @@ func (d *Database) GetChatwootMessageIDsForMatrixEventID(ctx context.Context, ev
 		var messageID int
 		err = rows.Scan(&messageID, &accountID)
 		if err != nil {
-			return nil, 0, fmt.Errorf("메시지 ID 스캔 실패: %w", err)
+			return nil, 0, err
 		}
+
 		messageIDs = append(messageIDs, chatwootapi.MessageID(messageID))
 	}
 
 	if err = rows.Err(); err != nil {
-		return nil, 0, fmt.Errorf("메시지 ID 반복 중 오류: %w", err)
+		return nil, 0, err
 	}
 
 	if len(messageIDs) == 0 {
 		return nil, 0, ErrNotFound
 	}
 
-	return messageIDs, accountID, nil
+	return messageIDs, chatwootapi.AccountID(accountID), nil
 }
 
 // StoreMatrixEventToChatwootMessage는 Matrix 이벤트와 Chatwoot 메시지 매핑을 저장합니다.
@@ -368,13 +358,29 @@ func (d *Database) DeleteMatrixEventForChatwootMessage(ctx context.Context, acco
 // SetChatwootMessageIDForMatrixEvent는 Matrix 이벤트 ID에 대한 Chatwoot 메시지 ID를 설정합니다.
 func (d *Database) SetChatwootMessageIDForMatrixEvent(ctx context.Context, accountID int, eventID id.EventID, messageID chatwootapi.MessageID) error {
 	_, err := d.DB.ExecContext(ctx, `
-		UPDATE chatwoot_message_to_matrix_event
-		   SET chatwoot_message_id = $3
-		 WHERE chatwoot_account_id = $1 AND matrix_event_id = $2`,
-		accountID, eventID, int(messageID))
+		INSERT INTO chatwoot_message_to_matrix_event (chatwoot_account_id, matrix_event_id, chatwoot_message_id)
+			VALUES ($1, $2, $3)
+		ON CONFLICT (chatwoot_account_id, matrix_event_id) DO UPDATE
+			SET chatwoot_message_id = EXCLUDED.chatwoot_message_id
+	`, accountID, eventID, messageID)
+	return err
+}
 
-	if err != nil {
-		return fmt.Errorf("메시지 ID 설정 실패: %w", err)
+// GetChatwootMessageFromMatrixEvent는 Matrix 이벤트 ID에 대한 Chatwoot 메시지 ID와 계정 ID를 반환합니다.
+func (d *Database) GetChatwootMessageFromMatrixEvent(ctx context.Context, eventID id.EventID) (chatwootapi.MessageID, chatwootapi.AccountID, error) {
+	row := d.DB.QueryRowContext(ctx, `
+		SELECT chatwoot_message_id, chatwoot_account_id
+		  FROM chatwoot_message_to_matrix_event
+		 WHERE matrix_event_id = $1
+		 LIMIT 1`, eventID)
+
+	var messageID chatwootapi.MessageID
+	var accountID int
+	if err := row.Scan(&messageID, &accountID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, 0, ErrNotFound
+		}
+		return 0, 0, fmt.Errorf("Matrix 이벤트에 대한 Chatwoot 메시지 ID 조회 실패: %w", err)
 	}
-	return nil
+	return messageID, chatwootapi.AccountID(accountID), nil
 }

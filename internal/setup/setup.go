@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -300,7 +299,7 @@ func setupKeyShareCallback(cryptoHelper *cryptohelper.CryptoHelper) {
 		log.Info().
 			Str("user_id", device.UserID.String()).
 			Str("device_id", device.DeviceID.String()).
-			Str("session_id", info.SessionID).
+			Str("session_id", string(info.SessionID)).
 			Msg("키 공유 요청 허용됨")
 
 		// 거부 없이 null 반환 = 허용
