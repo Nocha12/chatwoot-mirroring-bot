@@ -189,14 +189,15 @@ func StoreMatrixEventForChatwootMessage(ctx context.Context, db *sql.DB, account
 }
 
 // DeleteMatrixEventForChatwootMessage는 Chatwoot 메시지에 대한 Matrix 이벤트 매핑을 삭제합니다.
-func DeleteMatrixEventForChatwootMessage(ctx context.Context, db *sql.DB, accountID int, messageID chatwootapi.MessageID) error {
+func DeleteMatrixEventForChatwootMessage(ctx context.Context, db *sql.DB, accountID chatwootapi.AccountID, conversationID chatwootapi.ConversationID, messageID chatwootapi.MessageID) error {
 	log := zerolog.Ctx(ctx).With().
-		Int("account_id", accountID).
+		Int("account_id", int(accountID)).
+		Int("conversation_id", int(conversationID)).
 		Int("message_id", int(messageID)).
 		Logger()
 	ctx = log.WithContext(ctx)
 
-	log.Debug().Msg("deleting matrix events for chatwoot message")
+	log.Debug().Msg("Chatwoot 메시지에 대한 Matrix 이벤트 매핑 삭제 중")
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -205,9 +206,9 @@ func DeleteMatrixEventForChatwootMessage(ctx context.Context, db *sql.DB, accoun
 
 	del := `
 		DELETE FROM chatwoot_message_to_matrix_event
-		 WHERE chatwoot_account_id = $1 AND chatwoot_message_id = $2
+		 WHERE chatwoot_account_id = $1 AND chatwoot_conversation_id = $2 AND chatwoot_message_id = $3
 	`
-	_, err = tx.ExecContext(ctx, del, accountID, messageID)
+	_, err = tx.ExecContext(ctx, del, int(accountID), int(conversationID), int(messageID))
 	if err != nil {
 		return fmt.Errorf("failed to delete matrix events for chatwoot message: %w", err)
 	}
@@ -231,8 +232,8 @@ func GetChatwootMessageFromMatrixEventHelper(ctx context.Context, db *sql.DB, ev
 }
 
 // DeleteMatrixEventForChatwootMessageHelper는 Chatwoot 메시지에 대한 Matrix 이벤트 매핑을 삭제하는 헬퍼 함수입니다.
-func DeleteMatrixEventForChatwootMessageHelper(ctx context.Context, db *sql.DB, accountID int, messageID chatwootapi.MessageID) error {
-	return DeleteMatrixEventForChatwootMessage(ctx, db, accountID, messageID)
+func DeleteMatrixEventForChatwootMessageHelper(ctx context.Context, db *sql.DB, accountID chatwootapi.AccountID, conversationID chatwootapi.ConversationID, messageID chatwootapi.MessageID) error {
+	return DeleteMatrixEventForChatwootMessage(ctx, db, accountID, conversationID, messageID)
 }
 
 // SetChatwootMessageIDForMatrixEventHelper는 Matrix 이벤트에 대한 Chatwoot 메시지 ID를 설정하는 헬퍼 함수입니다.

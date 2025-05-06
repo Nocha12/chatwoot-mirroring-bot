@@ -15,6 +15,7 @@ import (
 	"github.com/rs/zerolog"
 	"go.mau.fi/util/dbutil"
 	"maunium.net/go/mautrix"
+	"maunium.net/go/mautrix/crypto"
 	"maunium.net/go/mautrix/crypto/cryptohelper"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
@@ -190,7 +191,7 @@ func SetupShutdownHandler(ctx context.Context, client *mautrix.Client, cryptoHel
 	var syncStopWait sync.WaitGroup
 
 	// 신호 처리를 위한 컨텍스트 생성
-	syncCtx, syncCancel := context.WithCancel(ctx)
+	_, syncCancel = context.WithCancel(ctx)
 	syncStopWait.Add(1)
 
 	// 종료 신호 수신 채널 설정
@@ -254,7 +255,7 @@ func setupDecryptErrorCallback(
 			return
 		}
 
-		conversationID, accountIDStr, err := stateStore.GetChatwootConversationIDFromMatrixRoom(ctx, evt.RoomID)
+		conversationID, accountID, err := stateStore.GetChatwootConversationIDFromMatrixRoom(ctx, evt.RoomID)
 		if err != nil {
 			evtLog.Warn().Err(err).Msg("이 방과 연결된 Chatwoot 대화가 없습니다")
 			return
@@ -263,7 +264,7 @@ func setupDecryptErrorCallback(
 		// 세션 키 요청 시도
 		evtLog.Info().Msg("세션 키 요청 시도")
 		if encryptedEvt, ok := evt.Content.Raw["encrypted"].(map[string]interface{}); ok {
-			if alg, exists := encryptedEvt["algorithm"].(string); exists && alg == id.AlgorithmMegolmV1.String() {
+			if alg, exists := encryptedEvt["algorithm"].(string); exists && alg == string(id.AlgorithmMegolmV1) {
 				sessionID, _ := encryptedEvt["session_id"].(string)
 				evtLog.Info().
 					Str("session_id", sessionID).
@@ -271,13 +272,8 @@ func setupDecryptErrorCallback(
 			}
 		}
 
-		// 계정 ID 변환
-		acIDInt, err := strconv.Atoi(accountIDStr)
-		if err != nil {
-			evtLog.Error().Err(err).Str("account_id", accountIDStr).Msg("계정 ID 변환 실패")
-			return
-		}
-		accountID := chatwootapi.AccountID(acIDInt)
+		// 계정 ID 값은 이미 chatwootapi.AccountID 타입으로 반환됨
+		evtLog.Info().Int("account_id", int(accountID)).Msg("사용할 계정 ID")
 
 		// API 클라이언트 가져오기
 		api := GetChatwootAPIForAccount(chatwootAPIs, accountID, defaultAccountID)
@@ -297,7 +293,7 @@ func setupDecryptErrorCallback(
 // setupKeyShareCallback은 키 공유 허용 설정을 합니다.
 func setupKeyShareCallback(cryptoHelper *cryptohelper.CryptoHelper) {
 	// 모든 키 공유 요청 허용
-	cryptoHelper.Machine().AllowKeyShare = func(ctx context.Context, device *id.Device, info *mautrix.RequestedKeyInfo) *mautrix.KeyShareRejection {
+	cryptoHelper.Machine().AllowKeyShare = func(ctx context.Context, device *id.Device, info event.RequestedKeyInfo) *crypto.KeyShareRejection {
 		log := zerolog.Ctx(ctx)
 
 		// 키 공유 요청에 대해 자세한 로그 추가

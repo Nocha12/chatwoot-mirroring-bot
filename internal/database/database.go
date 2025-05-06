@@ -32,13 +32,13 @@ func init() {
 // Store는 데이터베이스 작업을 위한 인터페이스입니다.
 type Store interface {
 	// matrix.StateStore와 호환되는 메서드
-	GetChatwootConversationIDFromMatrixRoom(ctx context.Context, roomID id.RoomID) (chatwootapi.ConversationID, string, error)
+	GetChatwootConversationIDFromMatrixRoom(ctx context.Context, roomID id.RoomID) (chatwootapi.ConversationID, chatwootapi.AccountID, error)
 	GetMatrixRoomFromChatwootConversation(ctx context.Context, conversationID chatwootapi.ConversationID, accountID string) (id.RoomID, string, error)
 	StoreMatrixRoomForChatwootConversation(ctx context.Context, roomID id.RoomID, conversationID chatwootapi.ConversationID, accountID string) error
-	GetAccountAndInboxIDForConversation(ctx context.Context, roomID id.RoomID) (int, int, error)
+	GetAccountAndInboxIDForConversation(ctx context.Context, roomID id.RoomID) (chatwootapi.AccountID, chatwootapi.InboxID, error)
 	GetChatwootMessageIDsForMatrixEventID(ctx context.Context, eventID id.EventID) ([]chatwootapi.MessageID, int, error)
 	StoreMatrixEventToChatwootMessage(ctx context.Context, accountID int, roomID id.RoomID, eventID id.EventID, conversationID chatwootapi.ConversationID, messageID chatwootapi.MessageID) error
-	DeleteMatrixEventForChatwootMessage(ctx context.Context, accountID int, messageID chatwootapi.MessageID) error
+	DeleteMatrixEventForChatwootMessage(ctx context.Context, accountID chatwootapi.AccountID, conversationID chatwootapi.ConversationID, messageID chatwootapi.MessageID) error
 
 	// 추가 데이터베이스 작업 메서드
 	UpdateMostRecentEventIDForRoom(ctx context.Context, roomID id.RoomID, mostRecentEventID id.EventID) error
@@ -146,7 +146,7 @@ func (d *Database) Close() error {
 }
 
 // GetChatwootConversationIDFromMatrixRoom은 Matrix 방 ID로부터 Chatwoot 대화 ID와 계정 ID를 찾습니다.
-func (d *Database) GetChatwootConversationIDFromMatrixRoom(ctx context.Context, roomID id.RoomID) (chatwootapi.ConversationID, string, error) {
+func (d *Database) GetChatwootConversationIDFromMatrixRoom(ctx context.Context, roomID id.RoomID) (chatwootapi.ConversationID, chatwootapi.AccountID, error) {
 	row := d.DB.QueryRowContext(ctx, `
 		SELECT chatwoot_conversation_id, chatwoot_account_id
 		  FROM chatwoot_conversation_to_matrix_room
@@ -157,12 +157,12 @@ func (d *Database) GetChatwootConversationIDFromMatrixRoom(ctx context.Context, 
 	err := row.Scan(&chatwootConversationID, &accountID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return 0, "", ErrNotFound
+			return 0, 0, ErrNotFound
 		}
-		return 0, "", fmt.Errorf("Chatwoot 대화 ID 조회 실패: %w", err)
+		return 0, 0, fmt.Errorf("Chatwoot 대화 ID 조회 실패: %w", err)
 	}
 
-	return chatwootapi.ConversationID(chatwootConversationID), strconv.Itoa(accountID), nil
+	return chatwootapi.ConversationID(chatwootConversationID), chatwootapi.AccountID(accountID), nil
 }
 
 // GetMatrixRoomFromChatwootConversation은 Chatwoot 대화 ID와 계정 ID로부터 Matrix 방 ID를 찾습니다.
@@ -212,7 +212,7 @@ func (d *Database) StoreMatrixRoomForChatwootConversation(ctx context.Context, r
 }
 
 // GetAccountAndInboxIDForConversation은 방 ID로부터 계정 ID와 인박스 ID를 찾습니다.
-func (d *Database) GetAccountAndInboxIDForConversation(ctx context.Context, roomID id.RoomID) (int, int, error) {
+func (d *Database) GetAccountAndInboxIDForConversation(ctx context.Context, roomID id.RoomID) (chatwootapi.AccountID, chatwootapi.InboxID, error) {
 	row := d.DB.QueryRowContext(ctx, `
 		SELECT chatwoot_account_id, chatwoot_inbox_id
 		  FROM chatwoot_conversation_to_matrix_room
@@ -227,7 +227,7 @@ func (d *Database) GetAccountAndInboxIDForConversation(ctx context.Context, room
 		return 0, 0, fmt.Errorf("계정/인박스 ID 조회 실패: %w", err)
 	}
 
-	return accountID, inboxID, nil
+	return chatwootapi.AccountID(accountID), chatwootapi.InboxID(inboxID), nil
 }
 
 // GetChatwootMessageIDsForMatrixEventID는 Matrix 이벤트 ID에 대한 Chatwoot 메시지 ID와 계정 ID를 반환합니다.
@@ -353,11 +353,11 @@ func (d *Database) DeleteMatrixRoomForChatwootConversation(ctx context.Context, 
 }
 
 // DeleteMatrixEventForChatwootMessage는 Chatwoot 메시지 ID에 대한 Matrix 이벤트 매핑을 삭제합니다.
-func (d *Database) DeleteMatrixEventForChatwootMessage(ctx context.Context, accountID int, messageID chatwootapi.MessageID) error {
+func (d *Database) DeleteMatrixEventForChatwootMessage(ctx context.Context, accountID chatwootapi.AccountID, conversationID chatwootapi.ConversationID, messageID chatwootapi.MessageID) error {
 	_, err := d.DB.ExecContext(ctx, `
 		DELETE FROM chatwoot_message_to_matrix_event
-		 WHERE chatwoot_account_id = $1 AND chatwoot_message_id = $2`,
-		accountID, int(messageID))
+		 WHERE chatwoot_account_id = $1 AND chatwoot_conversation_id = $2 AND chatwoot_message_id = $3`,
+		int(accountID), int(conversationID), int(messageID))
 
 	if err != nil {
 		return fmt.Errorf("이벤트-메시지 매핑 삭제 실패: %w", err)
