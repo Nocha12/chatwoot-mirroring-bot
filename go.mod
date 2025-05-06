@@ -1,4 +1,4 @@
-module github.com/beeper/chatwoot
+module github.com/Nocha12/chatwoot-mirroring-bot
 
 go 1.23.0
 
@@ -6,6 +6,7 @@ toolchain go1.23.8
 
 require (
 	github.com/jackc/pgx/v4 v4.18.3
+	github.com/rs/zerolog v1.34.0
 	github.com/sethvargo/go-retry v0.3.0
 	go.mau.fi/util v0.8.6
 	go.mau.fi/zeroconfig v0.1.3
@@ -30,7 +31,6 @@ require (
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/rs/xid v1.6.0 // indirect
-	github.com/rs/zerolog v1.33.0
 	github.com/tidwall/gjson v1.18.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
@@ -39,8 +39,26 @@ require (
 	golang.org/x/crypto v0.36.0 // indirect
 	golang.org/x/exp v0.0.0-20250305212735-054e65f0b394 // indirect
 	golang.org/x/net v0.37.0 // indirect
-	golang.org/x/sys v0.31.0 // indirect
+	golang.org/x/sys v0.32.0 // indirect
 	golang.org/x/text v0.23.0 // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
-	gopkg.in/yaml.v2 v2.4.0
+	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+replace github.com/Nocha12/chatwoot-mirroring-bot/cmd/bot => ./cmd/bot
+
+replace github.com/Nocha12/chatwoot-mirroring-bot/internal/chatwoot => ./internal/chatwoot
+
+replace github.com/Nocha12/chatwoot-mirroring-bot/internal/config => ./internal/config
+
+replace github.com/Nocha12/chatwoot-mirroring-bot/internal/conversation => ./internal/conversation
+
+replace github.com/Nocha12/chatwoot-mirroring-bot/internal/database => ./internal/database
+
+replace github.com/Nocha12/chatwoot-mirroring-bot/internal/matrix => ./internal/matrix
+
+replace github.com/Nocha12/chatwoot-mirroring-bot/internal/util => ./internal/util
+
+replace github.com/Nocha12/chatwoot-mirroring-bot/pkg/chatwootapi => ./pkg/chatwootapi
+
+replace github.com/Nocha12/chatwoot-mirroring-bot/chatwootapi => ./chatwootapi // 필요시 추가 (root의 chatwootapi)

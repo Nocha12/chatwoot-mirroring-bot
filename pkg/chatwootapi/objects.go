@@ -35,8 +35,14 @@ type CreateContactPayload struct {
 	Identifier  string  `json:"identifier"`
 }
 
-// Attachment
+// ContactUpdatePayload는 연락처 업데이트를 위한 페이로드입니다.
+type ContactUpdatePayload struct {
+	Name        string `json:"name,omitempty"`
+	PhoneNumber string `json:"phone_number,omitempty"`
+	Email       string `json:"email,omitempty"`
+}
 
+// Attachment
 type Attachment struct {
 	ID        AttachmentID `json:"id"`
 	FileType  string       `json:"file_type"`
@@ -47,12 +53,12 @@ type Attachment struct {
 }
 
 // Message
-
 type Sender struct {
-	ID            SenderID `json:"id"`
-	Name          string   `json:"name"`
-	Type          string   `json:"user"`
-	AvailableName string   `json:"available_name"`
+	ID        SenderID `json:"id"`
+	Name      string   `json:"name"`
+	Email     string   `json:"email"`
+	Type      string   `json:"type"`
+	AvatarUrl string   `json:"avatar_url"`
 }
 
 type Message struct {
@@ -63,10 +69,17 @@ type Message struct {
 	Sender      Sender       `json:"sender"`
 }
 
-// Conversation
+// NewMessage는 새 메시지 생성을 위한 구조체입니다.
+type NewMessage struct {
+	Content     string `json:"content,omitempty"`
+	Private     bool   `json:"private,omitempty"`
+	MessageType string `json:"message_type,omitempty"`
+}
 
+// Conversation
 type ConversationMeta struct {
-	Sender Contact `json:"sender"`
+	Sender   Contact `json:"sender"`
+	SourceID string  `json:"source_id,omitempty"`
 }
 
 type Conversation struct {
@@ -87,13 +100,12 @@ type ConversationLabelsPayload struct {
 }
 
 // Content Attributes
-
 type ContentAttributes struct {
-	Deleted bool `json:"deleted"`
+	Deleted     bool         `json:"deleted"`
+	Attachments []Attachment `json:"attachments,omitempty"`
 }
 
 // Webhook
-
 type MessageCreated struct {
 	ID                MessageID          `json:"id"`
 	Content           string             `json:"content"`
