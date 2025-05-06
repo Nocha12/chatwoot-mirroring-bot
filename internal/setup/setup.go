@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -17,6 +18,8 @@ import (
 	"maunium.net/go/mautrix/crypto/cryptohelper"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
+
+	"github.com/Nocha12/chatwoot-mirroring-bot/internal/matrix"
 
 	"github.com/Nocha12/chatwoot-mirroring-bot/internal/config"
 	"github.com/Nocha12/chatwoot-mirroring-bot/internal/database"
@@ -154,6 +157,8 @@ func SetupApp(configPath string) (*AppSetup, error) {
 		// API 클라이언트 생성
 		chatwootAPIs[accCfg.AccountID] = chatwootapi.NewClient(
 			baseURL,
+			accCfg.AccountID,
+			accCfg.InboxID,
 			accessToken,
 		)
 	}
@@ -180,12 +185,12 @@ func SetupApp(configPath string) (*AppSetup, error) {
 }
 
 // SetupShutdownHandler는 종료 신호를 처리하는 핸들러를 설정합니다.
-func SetupShutdownHandler(ctx context.Context, log zerolog.Logger, client *mautrix.Client, cryptoHelper *cryptohelper.CryptoHelper) {
-	var syncCtx context.Context
+func SetupShutdownHandler(ctx context.Context, client *mautrix.Client, cryptoHelper *cryptohelper.CryptoHelper, stateStore matrix.StateStore, log zerolog.Logger) {
 	var syncCancel context.CancelFunc
 	var syncStopWait sync.WaitGroup
 
-	syncCtx, syncCancel = context.WithCancel(ctx)
+	// 신호 처리를 위한 컨텍스트 생성
+	syncCtx, syncCancel := context.WithCancel(ctx)
 	syncStopWait.Add(1)
 
 	// 종료 신호 수신 채널 설정
@@ -194,7 +199,6 @@ func SetupShutdownHandler(ctx context.Context, log zerolog.Logger, client *mautr
 
 	go func() {
 		sig := <-c
-		log.Info().Str("algorithm", string(id.AlgorithmMegolmV1)).Msg("암호화 활성화")
 		log.Info().Str("signal", sig.String()).Msg("종료 신호 수신, 정리 중...")
 
 		// 동기화 취소
@@ -217,36 +221,21 @@ func SetupShutdownHandler(ctx context.Context, log zerolog.Logger, client *mautr
 func setupDecryptErrorCallback(
 	cryptoHelper *cryptohelper.CryptoHelper,
 	log zerolog.Logger,
-	stateStore *database.Database,
+	stateStore matrix.StateStore,
 	chatwootAPIs map[chatwootapi.AccountID]*chatwootapi.Client,
 	defaultAccountID chatwootapi.AccountID,
 ) {
-	// 이벤트 로거 헬퍼 함수
-	getLogger := func(evt *mautrix.Event) zerolog.Logger {
-		return log.With().
-			Stringer("event_type", evt.Type).
-			Stringer("sender", evt.Sender).
-			Str("room_id", string(evt.RoomID)).
-			Str("event_id", string(evt.ID)).
-			Logger()
-	}
-
-	// 첨부파일 전송을 위한 브로트캐스팅 이벤트 필터
-	client.AddEventListener(mautrix.EventSource(mautrix.EventSourceAll), func(evt *event.Event) {
-		evtLog := getLogger(evt)
-		ctx := evtLog.WithContext(context.Background())
-		evtLog.Info().Msg("이벤트 수신")
-
-		// 이벤트 처리
-		if evt.Type == mautrix.EventMessage {
-			evtLog.Info().Msg("메시지 이벤트 수신")
-			// 메시지 처리 로직 추가
-		}
-	})
+	// 복호화 오류 콜백에서는 이벤트 리스너를 설정할 필요가 없습니다.
 
 	// 복호화 오류 콜백 설정
 	cryptoHelper.DecryptErrorCallback = func(evt *event.Event, decryptErr error) {
-		evtLog := getLogger(evt)
+		// 이벤트 로그 생성
+		evtLog := log.With().
+			Str("sender", string(evt.Sender)).
+			Str("type", evt.Type.Type).
+			Stringer("room_id", evt.RoomID).
+			Str("event_id", string(evt.ID)).
+			Logger()
 		ctx := evtLog.WithContext(context.Background())
 		evtLog.Error().Err(decryptErr).Msg("메시지 복호화 실패")
 
