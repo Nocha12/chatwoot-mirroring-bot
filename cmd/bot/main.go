@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -19,7 +18,6 @@ import (
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/hlog"
-
 
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/event"
@@ -49,12 +47,13 @@ func main() {
 	flag.Parse()
 
 	// 초기 로깅 설정
-	log.Info().Str("config_path", *configPath).Msg("설정 파일 읽는 중")
+	logger := zerolog.New(os.Stdout).With().Timestamp().Logger()
+	logger.Info().Str("config_path", *configPath).Msg("설정 파일 읽는 중")
 
 	// 애플리케이션 설정 초기화
 	appSetup, err := setup.SetupApp(*configPath)
 	if err != nil {
-		log.Fatal().Err(err).Msg("애플리케이션 설정 초기화 실패")
+		logger.Fatal().Err(err).Msg("애플리케이션 설정 초기화 실패")
 	}
 
 	log := appSetup.Log
@@ -64,7 +63,7 @@ func main() {
 	roomSendlocks = map[id.RoomID]*sync.Mutex{}
 
 	// 종료 핸들러 설정
-	setup.SetupShutdownHandler(ctx, log, appSetup.Client, appSetup.CryptoHelper)
+	setup.SetupShutdownHandler(ctx, appSetup.Client, appSetup.CryptoHelper, appSetup.DB, log)
 
 	// 이벤트 핸들러 등록
 	// 매트릭스 핸들러 설정 (현재는 사용하지 않지만 추후 구현을 위해 준비)

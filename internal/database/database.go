@@ -255,12 +255,12 @@ func (d *Database) GetChatwootMessageIDsForMatrixEventID(ctx context.Context, ev
 }
 
 // StoreMatrixEventToChatwootMessage는 Matrix 이벤트와 Chatwoot 메시지 매핑을 저장합니다.
-func (d *Database) StoreMatrixEventToChatwootMessage(ctx context.Context, accountID int, roomID id.RoomID, eventID id.EventID, conversationID chatwootapi.ConversationID, messageID chatwootapi.MessageID) error {
+func (d *Database) StoreMatrixEventToChatwootMessage(ctx context.Context, accountID chatwootapi.AccountID, roomID id.RoomID, eventID id.EventID, conversationID chatwootapi.ConversationID, messageID chatwootapi.MessageID) error {
 	_, err := d.DB.ExecContext(ctx, `
 		INSERT INTO chatwoot_message_to_matrix_event
 		(chatwoot_account_id, matrix_room_id, matrix_event_id, chatwoot_conversation_id, chatwoot_message_id)
 		VALUES ($1, $2, $3, $4, $5)`,
-		accountID, roomID, eventID, int(conversationID), int(messageID))
+		int(accountID), roomID, eventID, int(conversationID), int(messageID))
 
 	if err != nil {
 		return fmt.Errorf("이벤트-메시지 매핑 저장 실패: %w", err)
@@ -366,21 +366,60 @@ func (d *Database) SetChatwootMessageIDForMatrixEvent(ctx context.Context, accou
 	return err
 }
 
-// GetChatwootMessageFromMatrixEvent는 Matrix 이벤트 ID에 대한 Chatwoot 메시지 ID와 계정 ID를 반환합니다.
-func (d *Database) GetChatwootMessageFromMatrixEvent(ctx context.Context, eventID id.EventID) (chatwootapi.MessageID, chatwootapi.AccountID, error) {
+// GetChatwootMessageFromMatrixEvent는 Matrix 이벤트 ID에 대한 Chatwoot 대화 ID와 메시지 ID를 반환합니다.
+func (d *Database) GetChatwootMessageFromMatrixEvent(ctx context.Context, roomID id.RoomID, eventID id.EventID) (chatwootapi.ConversationID, chatwootapi.MessageID, error) {
+	// 방 ID에서 대화 ID 조회
+	conversationID, _, err := d.GetChatwootConversationIDFromMatrixRoom(ctx, roomID)
+	if err != nil {
+		return 0, 0, fmt.Errorf("방 ID에서 대화 ID 조회 실패: %w", err)
+	}
+
+	// 이벤트 ID에서 메시지 ID 조회
 	row := d.DB.QueryRowContext(ctx, `
-		SELECT chatwoot_message_id, chatwoot_account_id
+		SELECT chatwoot_message_id
 		  FROM chatwoot_message_to_matrix_event
 		 WHERE matrix_event_id = $1
 		 LIMIT 1`, eventID)
 
 	var messageID chatwootapi.MessageID
-	var accountID int
-	if err := row.Scan(&messageID, &accountID); err != nil {
+	if err := row.Scan(&messageID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return 0, 0, ErrNotFound
 		}
 		return 0, 0, fmt.Errorf("Matrix 이벤트에 대한 Chatwoot 메시지 ID 조회 실패: %w", err)
 	}
-	return messageID, chatwootapi.AccountID(accountID), nil
+	return conversationID, messageID, nil
+}
+
+// GetMatrixEventFromChatwootMessage는 Chatwoot 메시지 정보에서 Matrix 방 ID와 이벤트 ID를 반환합니다.
+func (d *Database) GetMatrixEventFromChatwootMessage(ctx context.Context, accountID chatwootapi.AccountID, conversationID chatwootapi.ConversationID, messageID chatwootapi.MessageID) (id.RoomID, id.EventID, error) {
+	log := zerolog.Ctx(ctx).With().
+		Int("account_id", int(accountID)).
+		Int("conversation_id", int(conversationID)).
+		Int("message_id", int(messageID)).
+		Logger()
+	ctx = log.WithContext(ctx)
+
+	// 먼저 대화 ID에서 방 ID 조회
+	roomID, _, err := d.GetMatrixRoomFromChatwootConversation(ctx, conversationID, accountID)
+	if err != nil {
+		return "", "", fmt.Errorf("대화 ID에서 방 ID 조회 실패: %w", err)
+	}
+
+	// 그 다음 메시지 ID에서 이벤트 ID 조회
+	row := d.DB.QueryRowContext(ctx, `
+		SELECT matrix_event_id
+		  FROM chatwoot_message_to_matrix_event
+		 WHERE chatwoot_account_id = $1 AND chatwoot_message_id = $2
+		 LIMIT 1`, int(accountID), int(messageID))
+
+	var eventID id.EventID
+	if err := row.Scan(&eventID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return roomID, "", ErrNotFound
+		}
+		return roomID, "", fmt.Errorf("Chatwoot 메시지에 대한 Matrix 이벤트 ID 조회 실패: %w", err)
+	}
+
+	return roomID, eventID, nil
 }
