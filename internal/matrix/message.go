@@ -161,6 +161,36 @@ func (h *MessageHelperImpl) handleMediaMessage(ctx context.Context, evt *event.E
 	return []*chatwootapi.Message{sentMessage}, nil
 }
 
+// HandleMatrixReaction은 Matrix 리액션 이벤트를 처리합니다.
+func (h *MessageHelperImpl) HandleMatrixReaction(ctx context.Context, evt *event.Event, targetRoomID id.RoomID, targetEventID id.EventID) error {
+	log := zerolog.Ctx(ctx).With().
+		Str("component", "handle_matrix_reaction").
+		Stringer("event_id", evt.ID).
+		Stringer("target_event_id", targetEventID).
+		Logger()
+	ctx = log.WithContext(ctx)
+
+	log.Debug().Msg("Matrix 리액션 처리 준비 중")
+	// TODO: 리액션 처리 로직 구현
+	log.Info().Msg("리액션 처리 기능은 아직 구현되지 않았습니다")
+	return nil
+}
+
+// HandleMatrixRedaction은 Matrix 리덕션(삭제) 이벤트를 처리합니다.
+func (h *MessageHelperImpl) HandleMatrixRedaction(ctx context.Context, evt *event.Event, targetRoomID id.RoomID, targetEventID id.EventID) error {
+	log := zerolog.Ctx(ctx).With().
+		Str("component", "handle_matrix_redaction").
+		Stringer("event_id", evt.ID).
+		Stringer("target_event_id", targetEventID).
+		Logger()
+	ctx = log.WithContext(ctx)
+
+	log.Debug().Msg("Matrix 리덕션 처리 준비 중")
+	// TODO: 리덕션 처리 로직 구현
+	log.Info().Msg("리덕션 처리 기능은 아직 구현되지 않았습니다")
+	return nil
+}
+
 // downloadAndDecryptMedia는 Matrix 미디어를 다운로드하고 필요시 복호화합니다.
 func (h *MessageHelperImpl) downloadAndDecryptMedia(ctx context.Context, content *event.MessageEventContent) ([]byte, error) {
 	log := zerolog.Ctx(ctx).With().

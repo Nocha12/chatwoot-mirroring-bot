@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"path/filepath"
 
+	_ "github.com/jackc/pgx/v4/stdlib" // PostgreSQL 드라이버 임포트
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"go.mau.fi/util/dbutil"

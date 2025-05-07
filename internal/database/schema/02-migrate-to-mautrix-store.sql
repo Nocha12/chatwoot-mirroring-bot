@@ -3,14 +3,14 @@
 -- Create all of the tables from the upstream mautrix crypto store.
 -- This is only necessary for old installations of the chatwoot bot.
 
-CREATE TABLE mx_registrations (
+CREATE TABLE IF NOT EXISTS mx_registrations (
 	user_id TEXT PRIMARY KEY
 );
 
 -- only: postgres
 CREATE TYPE membership AS ENUM ('join', 'leave', 'invite', 'ban', 'knock');
 
-CREATE TABLE mx_user_profile (
+CREATE TABLE IF NOT EXISTS mx_user_profile (
 	room_id     TEXT,
 	user_id     TEXT,
 	membership  membership NOT NULL,
@@ -19,20 +19,20 @@ CREATE TABLE mx_user_profile (
 	PRIMARY KEY (room_id, user_id)
 );
 
-CREATE TABLE mx_room_state (
+CREATE TABLE IF NOT EXISTS mx_room_state (
 	room_id      TEXT PRIMARY KEY,
 	power_levels jsonb,
 	encryption   jsonb
 );
 
-CREATE TABLE mx_version (
+CREATE TABLE IF NOT EXISTS mx_version (
 	version INTEGER
 );
 
 INSERT INTO mx_version (version) VALUES (4);
 
 -- Migrate the existing data to the new crypto store
-DROP TABLE user_filter_ids;
+DROP TABLE IF EXISTS user_filter_ids;
 
 CREATE TABLE IF NOT EXISTS crypto_account (
 	account_id TEXT    PRIMARY KEY,
@@ -46,7 +46,7 @@ UPDATE crypto_account SET sync_token = (
 	SELECT next_batch_token
 	FROM user_batch_tokens
 );
-DROP TABLE user_batch_tokens;
+DROP TABLE IF EXISTS user_batch_tokens;
 
 CREATE TABLE IF NOT EXISTS mx_room_state (
 	room_id      TEXT PRIMARY KEY,

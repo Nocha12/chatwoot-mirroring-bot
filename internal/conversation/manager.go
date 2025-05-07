@@ -4,18 +4,16 @@ import (
 	"context"
 	"fmt"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/rs/zerolog"
-	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
-	"maunium.net/go/mautrix/sqlstatestore"
 
 	"github.com/Nocha12/chatwoot-mirroring-bot/internal/database"
-	
+	"github.com/Nocha12/chatwoot-mirroring-bot/internal/matrix"
+	"github.com/Nocha12/chatwoot-mirroring-bot/pkg/chatwootapi"
 )
 
 // Manager는 Matrix <-> Chatwoot 대화 연결 관리를 위한 인터페이스입니다.
@@ -32,7 +30,7 @@ type Manager interface {
 
 // ManagerImpl은 Manager 인터페이스를 구현하는 구조체입니다.
 type ManagerImpl struct {
-	Client             *mautrix.Client
+	Client             matrix.MatrixClient
 	StateStore         *database.Database
 	GetChatwootAPI     func(accountID chatwootapi.AccountID) *chatwootapi.Client
 	DefaultAccountID   chatwootapi.AccountID
@@ -42,7 +40,7 @@ type ManagerImpl struct {
 
 // NewManager는 새로운 Manager 인스턴스를 생성합니다.
 func NewManager(
-	client *mautrix.Client,
+	client matrix.MatrixClient,
 	stateStore *database.Database,
 	getChatwootAPI func(accountID chatwootapi.AccountID) *chatwootapi.Client,
 	defaultAccountID chatwootapi.AccountID,
@@ -92,12 +90,11 @@ func (m *ManagerImpl) GetOrCreateChatwootConversation(ctx context.Context, roomI
 		Stringer("sender", evt.Sender).
 		Msg("대화 ID 찾기 또는 생성 시작")
 
-	conversationID, accountIDStr, err := m.StateStore.GetChatwootConversationIDFromMatrixRoom(ctx, roomID)
+	conversationID, accountID, err := m.StateStore.GetChatwootConversationIDFromMatrixRoom(ctx, roomID)
 	if err == nil {
-		accID, _ := strconv.Atoi(accountIDStr)
 		log.Info().
 			Int("conversation_id", int(conversationID)).
-			Int("account_id", accID).
+			Int("account_id", int(accountID)).
 			Msg("기존 대화 ID 발견")
 		return conversationID, nil
 	}
@@ -109,7 +106,15 @@ func (m *ManagerImpl) GetOrCreateChatwootConversation(ctx context.Context, roomI
 	for i := 0; i < 2; i++ {
 		log.Info().Int("attempt", i+1).Msg("대화 생성 시도")
 
-		joinedMembers, err := m.Client.StateStore.(*sqlstatestore.SQLStateStore).GetRoomMembers(ctx, roomID, event.MembershipJoin)
+		// StateStore 직접 접근 대신 JoinedMembers 메서드 사용
+		joinedMembersResp, err := m.Client.JoinedMembers(ctx, roomID)
+		var joinedMembers map[id.UserID]struct{}
+		if err == nil {
+			joinedMembers = make(map[id.UserID]struct{}, len(joinedMembersResp.Joined))
+			for userID := range joinedMembersResp.Joined {
+				joinedMembers[id.UserID(userID)] = struct{}{}
+			}
+		}
 		if err != nil {
 			log.Error().
 				Err(err).
@@ -131,7 +136,7 @@ func (m *ManagerImpl) GetOrCreateChatwootConversation(ctx context.Context, roomI
 		}
 
 		contactMXID := evt.Sender
-		if m.Client.UserID == evt.Sender {
+		if m.Client.UserID() == evt.Sender {
 			// 봇으로부터 메시지가 왔습니다. 룸에 있는 다른 사용자를 찾아 사용합니다.
 			log.Info().Msg("봇 메시지에 대한 처리: 다른 참가자 검색")
 			delete(joinedMembers, evt.Sender)
@@ -336,8 +341,16 @@ func (m *ManagerImpl) createChatwootConversation(ctx context.Context, roomID id.
 
 // GetMatrixRoomForChatwootConversation은 Chatwoot 대화에 대응하는 Matrix 방을 검색합니다.
 func (m *ManagerImpl) GetMatrixRoomForChatwootConversation(ctx context.Context, accountID int, conversationID chatwootapi.ConversationID) (id.RoomID, id.EventID, error) {
-	roomID, eventIDStr, err := m.StateStore.GetMatrixRoomFromChatwootConversation(ctx, conversationID, strconv.Itoa(accountID))
-	return roomID, id.EventID(eventIDStr), err
+	log := zerolog.Ctx(ctx).With().Str("component", "get_matrix_room").Logger()
+	ctx = log.WithContext(ctx)
+
+	roomID, mostRecentEventIDStr, err := m.StateStore.GetMatrixRoomFromChatwootConversation(ctx, conversationID, chatwootapi.AccountID(accountID))
+	if err != nil {
+		log.Warn().Err(err).Msg("대화에 대한 Matrix 방 찾기 실패")
+		return "", "", err
+	}
+
+	return roomID, id.EventID(mostRecentEventIDStr), nil
 }
 
 // BackfillConversationForRoom은 Matrix 방에 대화 기록을 백필합니다.
@@ -346,34 +359,31 @@ func (m *ManagerImpl) BackfillConversationForRoom(ctx context.Context, roomID id
 
 	log.Info().Msg("대화 백필 시작")
 
-	messages, err := m.Client.Messages(ctx, roomID, "", "", mautrix.DirectionBackward, nil, 50)
-	if err != nil {
-		log.Err(err).Msg("방의 메시지 가져오기 실패")
-		return err
-	}
-
-	// 메시지를 역순으로 반복하여 대화 생성에 적합한 가장 최근 메시지 이벤트를 찾습니다.
-	for _, evt := range messages.Chunk {
-		if evt.Type != event.EventMessage && evt.Type != event.EventEncrypted {
-			continue
-		}
-
-		// 대화 ID 확인 시도
-		conversationID, accountIDStr, err := m.StateStore.GetChatwootConversationIDFromMatrixRoom(ctx, roomID)
+	// TODO: MatrixClient 인터페이스에 Messages 메서드를 추가하거나 여기서 타입 단언을 사용해야 합니다.
+	// 현재는 임시로 이 기능을 비활성화합니다.
+	/*
+		messages, err := m.Client.Messages(ctx, roomID, "", "", mautrix.DirectionBackward, nil, 50)
 		if err != nil {
-			// 대화가 없으면 여기서 생성하거나 처리할 수 있습니다.
-			// 현재는 간단히 로그만 남기고 종료합니다.
-			log.Debug().Err(err).Msg("방에 대화 ID가 없어 건너뜁니다")
-			return nil
+			log.Err(err).Msg("방의 메시지 가져오기 실패")
+			return err
 		}
+	*/
+	log.Warn().Msg("백필 기능이 현재 구현되지 않았습니다")
 
-		accID, _ := strconv.Atoi(accountIDStr)
-		log.Info().
-			Int("chatwoot_conversation_id", int(conversationID)).
-			Int("account_id", accID).
-			Msg("기존 Chatwoot 대화를 찾았습니다")
+	// 대화 ID 확인 시도
+	conversationID, accountID, err := m.StateStore.GetChatwootConversationIDFromMatrixRoom(ctx, roomID)
+	if err != nil {
+		// 대화가 없으면 여기서 생성하거나 처리할 수 있습니다.
+		// 현재는 간단히 로그만 남기고 종료합니다.
+		log.Debug().Err(err).Msg("방에 대화 ID가 없어 건너뜁니다")
 		return nil
 	}
+
+	log.Info().
+		Int("chatwoot_conversation_id", int(conversationID)).
+		Int("account_id", int(accountID)).
+		Msg("기존 Chatwoot 대화를 찾았습니다")
+	return nil
 
 	return fmt.Errorf("대화 생성에 적합한 메시지를 찾을 수 없습니다")
 }

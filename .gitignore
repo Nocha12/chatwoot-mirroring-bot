@@ -1,6 +1,5 @@
 bin
 logs
-chatwoot
 config*.json
 config*.yaml
 !config.sample.json
@@ -13,3 +12,5 @@ passwordfile
 accesstokenfile
 .envrc.user
 result
+
+pkg/mod

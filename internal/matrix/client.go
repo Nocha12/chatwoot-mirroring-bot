@@ -135,3 +135,23 @@ func (mca *MautrixClientAdapter) SendStateEvent(ctx context.Context, roomID id.R
 func (mca *MautrixClientAdapter) JoinedRooms(ctx context.Context) (*mautrix.RespJoinedRooms, error) {
 	return mca.Client.JoinedRooms(ctx)
 }
+
+// JoinedMembers는 방에 참여 중인 멤버 목록을 가져옵니다.
+func (mca *MautrixClientAdapter) JoinedMembers(ctx context.Context, roomID id.RoomID) (*mautrix.RespJoinedMembers, error) {
+	return mca.Client.JoinedMembers(ctx, roomID)
+}
+
+// JoinRoom은 방에 참여합니다.
+func (mca *MautrixClientAdapter) JoinRoom(ctx context.Context, roomID string, content *mautrix.ReqJoinRoom) (*mautrix.RespJoinRoom, error) {
+	return mca.Client.JoinRoom(ctx, roomID, content)
+}
+
+// LeaveRoom은 방에서 나갑니다.
+func (mca *MautrixClientAdapter) LeaveRoom(ctx context.Context, roomID id.RoomID) (*mautrix.RespLeaveRoom, error) {
+	return mca.Client.LeaveRoom(ctx, roomID)
+}
+
+// StateEvent는 방의 상태 이벤트를 가져옵니다.
+func (mca *MautrixClientAdapter) StateEvent(ctx context.Context, roomID id.RoomID, eventType event.Type, stateKey string, outContent interface{}) error {
+	return mca.Client.StateEvent(ctx, roomID, eventType, stateKey, outContent)
+}

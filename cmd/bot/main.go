@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/Nocha12/chatwoot-mirroring-bot/internal/chatwoot"
+	"github.com/Nocha12/chatwoot-mirroring-bot/internal/conversation"
+	"github.com/Nocha12/chatwoot-mirroring-bot/internal/matrix
 	"github.com/Nocha12/chatwoot-mirroring-bot/internal/setup"
 	"github.com/Nocha12/chatwoot-mirroring-bot/internal/util"
 	"github.com/Nocha12/chatwoot-mirroring-bot/pkg/chatwootapi"
@@ -66,8 +68,70 @@ func main() {
 	setup.SetupShutdownHandler(ctx, appSetup.Client, appSetup.CryptoHelper, appSetup.DB, log)
 
 	// 이벤트 핸들러 등록
-	// 매트릭스 핸들러 설정 (현재는 사용하지 않지만 추후 구현을 위해 준비)
-	// TODO: Matrix 핸들링 구현 완료 후 주석 해제
+	// Matrix 핸들러 설정
+	// Matrix 어뎅터 생성
+	matrixClient := matrix.NewMautrixClientAdapter(appSetup.Client)
+
+	// ChatwootAPIs를 func 형태로 변환
+	getChatwootAPI := func(accountID chatwootapi.AccountID) *chatwootapi.Client {
+		return appSetup.ChatwootAPIs[accountID]
+	}
+
+	// ConversationManager 생성 (다섯 번째 인자는 bridgeMembersLimit)
+	convManager := conversation.NewManager(matrixClient, appSetup.DB, getChatwootAPI, appSetup.DefaultAccountID, 100)
+
+	// MessageHelper 생성 (renderMarkdown 파라미터를 명시적으로 설정)
+	messageHelper := matrix.NewMessageHelper(appSetup.Client, getChatwootAPI, false)
+
+	// Matrix 핸들러 생성
+	matrixHandler := matrix.NewHandler(
+		matrixClient,
+		appSetup.ChatwootAPIs,
+		appSetup.DefaultAccountID,
+		appSetup.DB,
+		convManager,
+		messageHelper,
+	)
+
+	// Syncer 가져오기
+	syncer := appSetup.Client.Syncer.(*mautrix.DefaultSyncer)
+
+	// 이벤트 핸들러 등록
+	syncer.OnEventType(event.EventMessage, func(ctx context.Context, evt *event.Event) {
+		log := zerolog.Ctx(ctx).With().Str("component", "matrix_message_handler").Logger()
+		ctx = log.WithContext(ctx)
+		matrixHandler.HandleMessage(ctx, evt)
+	})
+
+	syncer.OnEventType(event.EventReaction, func(ctx context.Context, evt *event.Event) {
+		log := zerolog.Ctx(ctx).With().Str("component", "matrix_reaction_handler").Logger()
+		ctx = log.WithContext(ctx)
+		matrixHandler.HandleReaction(ctx, evt)
+	})
+
+	syncer.OnEventType(event.EventRedaction, func(ctx context.Context, evt *event.Event) {
+		log := zerolog.Ctx(ctx).With().Str("component", "matrix_redaction_handler").Logger()
+		ctx = log.WithContext(ctx)
+		matrixHandler.HandleRedaction(ctx, evt)
+	})
+
+	// 초대 수락 핸들러
+	syncer.OnEventType(event.StateMember, func(ctx context.Context, evt *event.Event) {
+		// StateKey가 포인터이믰로 예외 처리 추가
+		if evt.StateKey != nil && *evt.StateKey == string(appSetup.Client.UserID) && evt.Content.AsMember().Membership == event.MembershipInvite {
+			log := zerolog.Ctx(ctx).With().Str("component", "room_invite_handler").Stringer("room_id", evt.RoomID).Logger()
+			ctx = log.WithContext(ctx)
+			log.Info().Msg("방 초대 받음, 수락 중")
+
+			// JoinRoom 함수 인자 수정
+			_, err := appSetup.Client.JoinRoom(ctx, string(evt.RoomID), &mautrix.ReqJoinRoom{})
+			if err != nil {
+				log.Error().Err(err).Msg("방 참가 실패")
+			} else {
+				log.Info().Msg("방 참가 성공")
+			}
+		}
+	})
 
 	// Make sure that there are conversations for all of the rooms that the bot
 	// is in.
@@ -137,9 +201,8 @@ func main() {
 	}()
 
 	// 웹훅 리스너 설정
-	// TODO: MessageHandler 생성자 구현 수정 필요
 	messageHandler := chatwoot.NewMessageHandler(
-		appSetup.Client,
+		appSetup.Client, // 원래 mautrix.Client 타입이 필요함
 		appSetup.DB,
 		appSetup.ChatwootAPIs,
 		func(accountID chatwootapi.AccountID) *chatwootapi.Client {

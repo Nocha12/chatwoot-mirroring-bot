@@ -17,6 +17,10 @@ type MatrixClient interface {
 	SendStateEvent(ctx context.Context, roomID id.RoomID, eventType event.Type, stateKey string, content interface{}) (*mautrix.RespSendEvent, error)
 	RedactEvent(ctx context.Context, roomID id.RoomID, eventID id.EventID, opts ...mautrix.ReqRedact) (*mautrix.RespSendEvent, error)
 	JoinedRooms(ctx context.Context) (*mautrix.RespJoinedRooms, error)
+	JoinedMembers(ctx context.Context, roomID id.RoomID) (*mautrix.RespJoinedMembers, error)
+	JoinRoom(ctx context.Context, roomID string, content *mautrix.ReqJoinRoom) (*mautrix.RespJoinRoom, error)
+	LeaveRoom(ctx context.Context, roomID id.RoomID) (*mautrix.RespLeaveRoom, error)
+	StateEvent(ctx context.Context, roomID id.RoomID, eventType event.Type, stateKey string, outContent interface{}) error
 }
 
 // StateStore는 상태 저장 인터페이스를 정의합니다.
