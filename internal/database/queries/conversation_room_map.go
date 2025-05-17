@@ -56,7 +56,11 @@ func UpdateMostRecentEventIDForRoom(ctx context.Context, db *sql.DB, roomID id.R
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() {
+		if err := tx.Rollback(); err != nil && err != sql.ErrTxDone {
+			log.Error().Err(err).Msg("트랜잭션 롤백 실패")
+		}
+	}()
 
 	update := `
 		UPDATE chatwoot_conversation_to_matrix_room
@@ -85,7 +89,12 @@ func UpdateConversationIDForRoom(ctx context.Context, db *sql.DB, roomID id.Room
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() {
+		err := tx.Rollback()
+		if err != nil && err != sql.ErrTxDone {
+			zerolog.Ctx(ctx).Error().Err(err).Msg("tx.Rollback 에러")
+		}
+	}()
 
 	upsert := `
 		INSERT INTO chatwoot_conversation_to_matrix_room (matrix_room_id, chatwoot_account_id, chatwoot_inbox_id, chatwoot_conversation_id)
@@ -115,7 +124,12 @@ func DeleteMatrixRoomForChatwootConversation(ctx context.Context, db *sql.DB, ac
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() {
+		err := tx.Rollback()
+		if err != nil && err != sql.ErrTxDone {
+			zerolog.Ctx(ctx).Error().Err(err).Msg("tx.Rollback 에러")
+		}
+	}()
 
 	delete := `
 		DELETE FROM chatwoot_conversation_to_matrix_room
@@ -155,7 +169,12 @@ func StoreMatrixRoomForChatwootConversation(ctx context.Context, db *sql.DB, acc
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() {
+		err := tx.Rollback()
+		if err != nil && err != sql.ErrTxDone {
+			zerolog.Ctx(ctx).Error().Err(err).Msg("tx.Rollback 에러")
+		}
+	}()
 
 	upsert := `
 		INSERT INTO chatwoot_conversation_to_matrix_room (chatwoot_account_id, chatwoot_inbox_id, chatwoot_conversation_id, matrix_room_id)

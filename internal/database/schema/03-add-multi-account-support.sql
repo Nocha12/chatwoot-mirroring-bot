@@ -1,19 +1,11 @@
 -- v3: Add multi-account support
 
 -- Add columns to chatwoot_conversation_to_matrix_room
-ALTER TABLE chatwoot_conversation_to_matrix_room ADD COLUMN chatwoot_account_id INTEGER;
-ALTER TABLE chatwoot_conversation_to_matrix_room ADD COLUMN chatwoot_inbox_id INTEGER;
+ALTER TABLE chatwoot_conversation_to_matrix_room ADD COLUMN IF NOT EXISTS chatwoot_account_id INTEGER;
+ALTER TABLE chatwoot_conversation_to_matrix_room ADD COLUMN IF NOT EXISTS chatwoot_inbox_id INTEGER;
 
 -- Add column to chatwoot_message_to_matrix_event
-ALTER TABLE chatwoot_message_to_matrix_event ADD COLUMN chatwoot_account_id INTEGER;
-
--- !! 중요 !!
--- 여기에서 기존 데이터를 업데이트해야 합니다.
--- 아래 값들은 마이그레이션 *이전*의 config.yaml에 설정되어 있던 값으로 직접 바꿔야 합니다.
--- 예시: 기존 account_id가 3이고 inbox_id가 2였다면:
-UPDATE chatwoot_conversation_to_matrix_room SET chatwoot_account_id = 3, chatwoot_inbox_id = 2;
-UPDATE chatwoot_message_to_matrix_event SET chatwoot_account_id = 3;
--- 만약 기존 데이터가 없다면 이 UPDATE 문은 실행되지 않아도 됩니다.
+ALTER TABLE chatwoot_message_to_matrix_event ADD COLUMN IF NOT EXISTS chatwoot_account_id INTEGER;
 
 -- Add NOT NULL constraints after updating existing data
 ALTER TABLE chatwoot_conversation_to_matrix_room ALTER COLUMN chatwoot_account_id SET NOT NULL;
@@ -28,6 +20,9 @@ ALTER TABLE chatwoot_message_to_matrix_event ALTER COLUMN chatwoot_account_id SE
 ALTER TABLE chatwoot_conversation_to_matrix_room DROP CONSTRAINT IF EXISTS chatwoot_conversation_to_matrix_room_pkey;
 ALTER TABLE chatwoot_conversation_to_matrix_room DROP CONSTRAINT IF EXISTS chatwoot_conversation_to_matrix_room_chatwoot_conversation_id_key;
 ALTER TABLE chatwoot_conversation_to_matrix_room DROP CONSTRAINT IF EXISTS chatwoot_conversation_to_matrix_room_matrix_room_id_key; -- matrix_room_id UNIQUE 제약조건이 있었다면
+
+-- (수정) 새로운 UNIQUE 제약조건을 추가하기 전에 혹시 동일한 이름으로 이미 존재하면 삭제
+ALTER TABLE chatwoot_conversation_to_matrix_room DROP CONSTRAINT IF EXISTS unique_chatwoot_conversation_per_account;
 
 -- 새로운 제약 조건 추가
 ALTER TABLE chatwoot_conversation_to_matrix_room ADD PRIMARY KEY (matrix_room_id); -- matrix_room_id가 고유하다고 가정

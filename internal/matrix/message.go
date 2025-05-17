@@ -15,26 +15,32 @@ import (
 
 // MessageHelperImpl은 MessageHelper 인터페이스를 구현하는 구조체입니다.
 type MessageHelperImpl struct {
-	Client         *mautrix.Client
-	GetAPIFunc     func(accountID chatwootapi.AccountID) *chatwootapi.Client
+	Client         *mautrix.Client                                           // mautrix.Client는 그대로 사용
+	GetAPIFunc     func(accountID chatwootapi.AccountID) *chatwootapi.Client // Chatwoot API 클라이언트를 가져오는 함수
 	RenderMarkdown bool
+	// StateStore를 주입하여 accountID 조회를 여기서 수행하도록 합니다.
+	StateStore StateStore
 }
 
 // NewMessageHelper는 새로운 MessageHelperImpl 인스턴스를 생성합니다.
+// StateStore 인자를 추가했습니다.
 func NewMessageHelper(
 	client *mautrix.Client,
 	getAPIFunc func(accountID chatwootapi.AccountID) *chatwootapi.Client,
 	renderMarkdown bool,
+	stateStore StateStore, // StateStore 인자 추가
 ) *MessageHelperImpl {
 	return &MessageHelperImpl{
 		Client:         client,
 		GetAPIFunc:     getAPIFunc,
 		RenderMarkdown: renderMarkdown,
+		StateStore:     stateStore, // StateStore 필드 초기화
 	}
 }
 
 // HandleMatrixMessageContent 함수는 Matrix 메시지 내용을 처리하여 Chatwoot로 전송합니다
-func (h *MessageHelperImpl) HandleMatrixMessageContent(ctx context.Context, evt *event.Event, conversationID chatwootapi.ConversationID, content *event.MessageEventContent) ([]*chatwootapi.Message, error) {
+// accountID 인자를 추가했습니다.
+func (h *MessageHelperImpl) HandleMatrixMessageContent(ctx context.Context, evt *event.Event, accountID chatwootapi.AccountID, conversationID chatwootapi.ConversationID, content *event.MessageEventContent) ([]*chatwootapi.Message, error) {
 	log := zerolog.Ctx(ctx).With().
 		Str("component", "handle_matrix_message_content").
 		Int("conversation_id", int(conversationID)).
@@ -42,11 +48,9 @@ func (h *MessageHelperImpl) HandleMatrixMessageContent(ctx context.Context, evt 
 		Logger()
 	ctx = log.WithContext(ctx)
 
-	accountID, _, err := h.getAccountAndInboxForConversation(ctx, conversationID)
-	if err != nil {
-		return nil, err
-	}
-	api := h.GetAPIFunc(accountID)
+	// Chatwoot API 클라이언트 가져오기
+	// GetAPIFunc를 사용하여 적절한 계정의 클라이언트를 가져옴
+	api := h.GetAPIFunc(accountID) // accountID 인자 사용
 
 	// 메시지 타입에 따른 처리
 	switch content.MsgType {
@@ -65,15 +69,8 @@ func (h *MessageHelperImpl) HandleMatrixMessageContent(ctx context.Context, evt 
 		}
 
 		// 메시지 송신
-		message := chatwootapi.NewMessage{
-			Content:     messageBody,
-			MessageType: "incoming",
-		}
-
-		// 필요시 HTML 형식 처리 로직 추가
-		// ...
-
-		sentMessage, err := api.SendTextMessage(ctx, conversationID, message.Content, chatwootapi.IncomingMessage)
+		// 수정: api.SendTextMessage -> api.Messages.SendTextMessage
+		sentMessage, err := api.Messages.SendTextMessage(ctx, conversationID, messageBody, chatwootapi.IncomingMessage)
 		if err != nil {
 			log.Error().Err(err).Msg("Chatwoot 메시지 생성 실패")
 			return nil, err
@@ -96,7 +93,8 @@ func (h *MessageHelperImpl) HandleMatrixMessageContent(ctx context.Context, evt 
 		}
 
 		// 미디어 메시지 처리
-		return h.handleMediaMessage(ctx, evt, conversationID, content, mediaType, "incoming")
+		// 수정: h.handleMediaMessage -> h.handleMediaMessage (accountID 인자 추가)
+		return h.handleMediaMessage(ctx, evt, accountID, conversationID, content, mediaType, chatwootapi.IncomingMessage) // accountID 전달
 
 	default:
 		log.Warn().Str("msg_type", string(content.MsgType)).Msg("지원되지 않는 메시지 타입")
@@ -105,7 +103,8 @@ func (h *MessageHelperImpl) HandleMatrixMessageContent(ctx context.Context, evt 
 }
 
 // handleMediaMessage는 미디어 메시지를 처리합니다 (이미지, 비디오, 오디오, 파일)
-func (h *MessageHelperImpl) handleMediaMessage(ctx context.Context, evt *event.Event, conversationID chatwootapi.ConversationID, content *event.MessageEventContent, mediaType string, messageType chatwootapi.MessageType) ([]*chatwootapi.Message, error) {
+// accountID 인자를 추가했습니다.
+func (h *MessageHelperImpl) handleMediaMessage(ctx context.Context, evt *event.Event, accountID chatwootapi.AccountID, conversationID chatwootapi.ConversationID, content *event.MessageEventContent, mediaType string, messageType chatwootapi.MessageType) ([]*chatwootapi.Message, error) {
 	log := zerolog.Ctx(ctx).With().
 		Str("component", "handle_media_message").
 		Int("conversation_id", int(conversationID)).
@@ -140,14 +139,11 @@ func (h *MessageHelperImpl) handleMediaMessage(ctx context.Context, evt *event.E
 	}
 
 	// Chatwoot API 클라이언트 가져오기
-	accountID, _, err := h.getAccountAndInboxForConversation(ctx, conversationID)
-	if err != nil {
-		return nil, err
-	}
-	api := h.GetAPIFunc(accountID)
+	api := h.GetAPIFunc(accountID) // accountID 인자 사용
 
 	// 첨부파일 메시지 전송
-	sentMessage, err := api.SendAttachmentMessage(ctx, conversationID, fileName, mimeType, bytes.NewReader(mediaData), chatwootapi.IncomingMessage)
+	// 수정: api.SendAttachmentMessage -> api.Messages.SendAttachmentMessage
+	sentMessage, err := api.Messages.SendAttachmentMessage(ctx, conversationID, fileName, mimeType, bytes.NewReader(mediaData), chatwootapi.IncomingMessage)
 	if err != nil {
 		log.Error().Err(err).Msg("Chatwoot 첨부파일 업로드 실패")
 		return nil, err
@@ -168,7 +164,6 @@ func (h *MessageHelperImpl) HandleMatrixReaction(ctx context.Context, evt *event
 		Stringer("event_id", evt.ID).
 		Stringer("target_event_id", targetEventID).
 		Logger()
-	ctx = log.WithContext(ctx)
 
 	log.Debug().Msg("Matrix 리액션 처리 준비 중")
 	// TODO: 리액션 처리 로직 구현
@@ -183,7 +178,6 @@ func (h *MessageHelperImpl) HandleMatrixRedaction(ctx context.Context, evt *even
 		Stringer("event_id", evt.ID).
 		Stringer("target_event_id", targetEventID).
 		Logger()
-	ctx = log.WithContext(ctx)
 
 	log.Debug().Msg("Matrix 리덕션 처리 준비 중")
 	// TODO: 리덕션 처리 로직 구현
@@ -213,9 +207,9 @@ func (h *MessageHelperImpl) downloadAndDecryptMedia(ctx context.Context, content
 		}
 
 		// 복호화
-		// 최신 mautrix 라이브러리에서는 EncryptedFile에 직접 Decrypt 메서드 사용
-		data, err = content.File.EncryptedFile.Decrypt(data)
-		if err != nil {
+		// 최신 mautrix 라이브러리에서는 DecryptInPlace 메서드 사용 (메모리 효율적)
+		encryptedFile := content.File.EncryptedFile
+		if err = encryptedFile.DecryptInPlace(data); err != nil {
 			log.Error().Err(err).Msg("파일 복호화 실패")
 			return nil, err
 		}
@@ -255,6 +249,7 @@ func (h *MessageHelperImpl) downloadMedia(ctx context.Context, uri id.ContentURI
 }
 
 // getAccountAndInboxForConversation은 대화 ID에 대한 계정 ID와 인박스 ID를 반환합니다.
+// nolint:unused
 func (h *MessageHelperImpl) getAccountAndInboxForConversation(ctx context.Context, conversationID chatwootapi.ConversationID) (chatwootapi.AccountID, chatwootapi.InboxID, error) {
 	// 실제 구현에서는 DB 또는 다른 소스에서 계정 및 인박스 정보를 가져와야 합니다.
 	// 현재는 간단한 예시로 더미 값을 반환합니다.

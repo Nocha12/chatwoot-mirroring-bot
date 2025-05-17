@@ -48,6 +48,7 @@ func DoRetryArr[T any](ctx context.Context, action string, fn func(context.Conte
 }
 
 // truncateString은 문자열을 지정된 길이로 잘라내고 필요시 '...'를 붙입니다.
+// nolint:unused
 func truncateString(s string, maxLength int) string {
 	if len(s) <= maxLength {
 		return s

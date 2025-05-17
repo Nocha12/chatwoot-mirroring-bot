@@ -39,7 +39,11 @@ func (h *WebhookHandler) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 요청 본문 읽기
-	defer r.Body.Close()
+	defer func() {
+		if err := r.Body.Close(); err != nil {
+			logger.Error().Err(err).Msg("요청 본문 닫기 실패")
+		}
+	}()
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		logger.Error().Err(err).Msg("요청 본문 읽기 실패")

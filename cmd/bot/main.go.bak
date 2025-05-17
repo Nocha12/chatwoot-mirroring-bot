@@ -1,0 +1,300 @@
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"net/http"
+	"os"
+	"os/signal"
+	"sync"
+	"syscall"
+	"time"
+
+	"github.com/Nocha12/chatwoot-mirroring-bot/internal/chatwoot"
+	"github.com/Nocha12/chatwoot-mirroring-bot/internal/conversation"
+	"github.com/Nocha12/chatwoot-mirroring-bot/internal/matrix"
+	"github.com/Nocha12/chatwoot-mirroring-bot/internal/setup"
+	"github.com/Nocha12/chatwoot-mirroring-bot/internal/util"
+	"github.com/Nocha12/chatwoot-mirroring-bot/pkg/chatwootapi"
+
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/hlog"
+
+	"maunium.net/go/mautrix"
+	"maunium.net/go/mautrix/event"
+	"maunium.net/go/mautrix/id"
+)
+
+// 전역 변수 정의
+var VERSION = "0.2.1"
+
+// Chatwoot 대화 ID 저장을 위한 상태 이벤트 타입
+var chatwootConversationIDType = event.Type{
+	Type:  "com.beeper.chatwoot.conversation_id",
+	Class: event.StateEventType,
+}
+
+// ChatwootConversationIDEventContent는 Chatwoot 대화 ID를 저장하는 이벤트 컨텐츠입니다.
+type ChatwootConversationIDEventContent struct {
+	ConversationID chatwootapi.ConversationID `json:"conversation_id"`
+}
+
+// 방 동기화를 위한 락 관리
+var roomSendlocks map[id.RoomID]*sync.Mutex
+
+func main() {
+	// 설정 파일 경로 인자 파싱
+	configPath := flag.String("config", "./config.yaml", "설정 파일 위치")
+	useDb := flag.Bool("use-db", false, "데이터베이스에서 설정 불러오기 (활성화시 파일 설정 무시)")
+	dbConfigPath := flag.String("db-config", "./db_config.yaml", "DB 설정 파일 경로")
+	flag.Parse()
+
+	// 초기 로깅 설정
+	logger := zerolog.New(os.Stdout).With().Timestamp().Logger()
+
+	// 설정 불러오기 방식 결정
+	var actualConfigPath string
+	if *useDb {
+		logger.Info().Msg("데이터베이스에서 설정 불러오기 모드를 사용합니다")
+		// DB 설정 파일 경로를 환경 변수로 설정
+		os.Setenv("DB_CONFIG_PATH", *dbConfigPath)
+		actualConfigPath = "" // 빈 경로는 데이터베이스 기반 설정을 사용한다는 신호
+	} else {
+		logger.Info().Str("config_path", *configPath).Msg("설정 파일에서 설정 불러오기")
+		actualConfigPath = *configPath
+	}
+
+	// 애플리케이션 설정 초기화
+	appSetup, err := setup.SetupApp(actualConfigPath)
+	if err != nil {
+		logger.Fatal().Err(err).Msg("애플리케이션 설정 초기화 실패")
+	}
+
+	log := appSetup.Log
+	ctx := log.WithContext(context.TODO())
+
+	// 방 동기화 락 초기화
+	roomSendlocks = map[id.RoomID]*sync.Mutex{}
+
+	// 종료 핸들러 설정
+	setup.SetupShutdownHandler(ctx, appSetup.Client, appSetup.CryptoHelper, appSetup.DB, log)
+
+	// 이벤트 핸들러 등록
+	// Matrix 핸들러 설정
+	// Matrix 어뎅터 생성
+	matrixClient := matrix.NewMautrixClientAdapter(appSetup.Client)
+
+	// ChatwootAPIs를 func 형태로 변환
+	getChatwootAPI := func(accountID chatwootapi.AccountID) *chatwootapi.Client {
+		return appSetup.ChatwootAPIs[accountID]
+	}
+
+	// ConversationManager 생성 (다섯 번째 인자는 bridgeMembersLimit)
+	convManager := conversation.NewManager(matrixClient, appSetup.DB, getChatwootAPI, appSetup.DefaultAccountID, 100)
+
+	// MessageHelper 생성 (renderMarkdown 파라미터를 명시적으로 설정)
+	messageHelper := matrix.NewMessageHelper(appSetup.Client, getChatwootAPI, false, appSetup.DB)
+
+	// Matrix 핸들러 생성
+	matrixHandler := matrix.NewMatrixHandler(
+		matrixClient,
+		appSetup.ChatwootAPIs,
+		appSetup.DefaultAccountID,
+		appSetup.DB,
+		messageHelper,
+		convManager,
+	)
+
+	// Syncer 가져오기
+	syncer := appSetup.Client.Syncer.(*mautrix.DefaultSyncer)
+
+	// 이벤트 핸들러 등록
+	syncer.OnEventType(event.EventMessage, func(ctx context.Context, evt *event.Event) {
+		log := zerolog.Ctx(ctx).With().Str("component", "matrix_message_handler").Logger()
+		ctx = log.WithContext(ctx)
+		matrixHandler.HandleMessage(ctx, evt)
+	})
+
+	syncer.OnEventType(event.EventReaction, func(ctx context.Context, evt *event.Event) {
+		log := zerolog.Ctx(ctx).With().Str("component", "matrix_reaction_handler").Logger()
+		ctx = log.WithContext(ctx)
+		matrixHandler.HandleReaction(ctx, evt)
+	})
+
+	syncer.OnEventType(event.EventRedaction, func(ctx context.Context, evt *event.Event) {
+		log := zerolog.Ctx(ctx).With().Str("component", "matrix_redaction_handler").Logger()
+		ctx = log.WithContext(ctx)
+		matrixHandler.HandleRedaction(ctx, evt)
+	})
+
+	// 초대 수락 핸들러
+	syncer.OnEventType(event.StateMember, func(ctx context.Context, evt *event.Event) {
+		// StateKey가 포인터이믰로 예외 처리 추가
+		if evt.StateKey != nil && *evt.StateKey == string(appSetup.Client.UserID) && evt.Content.AsMember().Membership == event.MembershipInvite {
+			log := zerolog.Ctx(ctx).With().Str("component", "room_invite_handler").Stringer("room_id", evt.RoomID).Logger()
+			ctx = log.WithContext(ctx)
+			log.Info().Msg("방 초대 받음, 수락 중")
+
+			// JoinRoom 함수 인자 수정
+			_, err := appSetup.Client.JoinRoom(ctx, string(evt.RoomID), &mautrix.ReqJoinRoom{})
+			if err != nil {
+				log.Error().Err(err).Msg("방 참가 실패")
+			} else {
+				log.Info().Msg("방 참가 성공")
+			}
+		}
+	})
+
+	// Make sure that there are conversations for all of the rooms that the bot
+	// is in.
+	// This is run every 24 hours.
+	go func() {
+		if !appSetup.Config.Backfill.ChatwootConversations && !appSetup.Config.Backfill.ConversationIDStateEvents {
+			return
+		}
+
+		for {
+			log := log.With().Str("component", "conversation_creation_backfill").Logger()
+			ctx := log.WithContext(context.Background())
+
+			log.Info().Msg("시작: 아직 대화가 없는 방에 대한 대화 생성")
+
+			joined, err := appSetup.Client.JoinedRooms(ctx)
+			if err != nil {
+				log.Fatal().Err(err).Msg("참여한 방 목록 가져오기 실패")
+			}
+
+			for _, roomID := range joined.JoinedRooms {
+				conversationID, _, err := appSetup.DB.GetChatwootConversationIDFromMatrixRoom(ctx, roomID)
+				if err != nil {
+					// 이 방에는 아직 Chatwoot 대화가 연결되어 있지 않음
+					if appSetup.Config.Backfill.ChatwootConversations {
+						err = backfillConversationForRoom(ctx, roomID, appSetup.Client)
+						if err != nil {
+							log.Warn().Err(err).Msg("방에 대한 대화 백필 실패")
+							continue
+						}
+					}
+				} else if appSetup.Config.Backfill.ConversationIDStateEvents {
+					// 이미 Chatwoot 대화가 있는 경우, 해당 방에 Chatwoot 대화 ID가 포함된
+					// 상태 이벤트가 있는지 확인합니다.
+					_, err = appSetup.Client.SendStateEvent(ctx, roomID, chatwootConversationIDType, "", ChatwootConversationIDEventContent{
+						ConversationID: conversationID,
+					})
+					if err != nil {
+						log.Warn().Err(err).Msg("대화 ID 상태 이벤트 전송 실패")
+					}
+				}
+			}
+
+			log.Info().Msg("완료: 아직 대화가 없는 방에 대한 대화 생성... 24시간 후 다시 백필 시작")
+			time.Sleep(24 * time.Hour)
+		}
+	}()
+
+	// 정상 종료 보장
+	c := make(chan os.Signal, 1)
+	signal.Notify(c,
+		syscall.SIGABRT,
+		syscall.SIGHUP,
+		syscall.SIGINT,
+		syscall.SIGQUIT,
+		syscall.SIGTERM,
+	)
+	go func() {
+		for range c { // 프로세스가 종료될 때
+			log.Info().Msg("정리 중...")
+			// DB 연결 종료
+			if appSetup.DB != nil && appSetup.DB.DB != nil {
+				_ = appSetup.DB.DB.Close()
+			}
+			os.Exit(0)
+		}
+	}()
+
+	// 웹훅 리스너 설정
+	messageHandler := chatwoot.NewMessageHandler(
+		appSetup.Client, // 원래 mautrix.Client 타입이 필요함
+		appSetup.DB,
+		appSetup.ChatwootAPIs,
+		func(accountID chatwootapi.AccountID) *chatwootapi.Client {
+			return setup.GetChatwootAPIForAccount(
+				appSetup.ChatwootAPIs,
+				accountID,
+				appSetup.DefaultAccountID,
+			)
+		},
+		roomSendlocks,
+	)
+	webhookHandler := chatwoot.NewWebhookHandler(messageHandler)
+
+	router := http.NewServeMux()
+	router.HandleFunc("/chatwoot", webhookHandler.HandleWebhook)
+
+	// HTTP 로그 핸들러 설정
+	handler := hlog.AccessHandler(func(r *http.Request, status, size int, duration time.Duration) {
+		hlog.FromRequest(r).Debug().Int("status", status).Int("size", size).Dur("duration", duration).Str("method", r.Method).Stringer("url", r.URL).Msg("")
+	})(router)
+
+	http.Handle("/", handler)
+	http.Handle("/webhook", handler)
+	log.Info().Int("listen_port", appSetup.Config.HTTPListenPort).Msg("웹훅 리스너 시작 중")
+	err = http.ListenAndServe(fmt.Sprintf(":%d", appSetup.Config.HTTPListenPort), nil)
+	if err != nil {
+		log.Error().Err(err).Msg("웹훅 리스너 생성 실패")
+	}
+
+	// 종료 시 정리
+	err = appSetup.CryptoHelper.Close()
+	if err != nil {
+		log.Error().Err(err).Msg("암호화 헬퍼 닫기 오류")
+	}
+}
+
+func backfillConversationForRoom(ctx context.Context, roomID id.RoomID, client *mautrix.Client) error {
+	log := zerolog.Ctx(ctx).With().Stringer("room_id", roomID).Logger()
+	ctx = log.WithContext(ctx)
+
+	log.Info().Msg("방에 대한 대화 생성 중")
+
+	// 대화 생성을 위한 룸 정보 가져오기
+	// 룸 이름 가져오기
+	var roomName string
+	var roomNameContent event.RoomNameEventContent
+	var err error
+	err = client.StateEvent(ctx, roomID, event.StateRoomName, "", &roomNameContent)
+	if err == nil && roomNameContent.Name != "" {
+		roomName = roomNameContent.Name
+	} else {
+		log.Debug().Err(err).Msg("방 이름 이벤트 가져오기 실패")
+	}
+
+	// 방 이름이 없는 경우 참가자 수 기반으로 이름 생성
+	if roomName == "" {
+		// 현재 참가자 목록 가져오기
+		members := 0
+		joinResp, err := client.JoinedMembers(ctx, roomID)
+		if err == nil && joinResp != nil {
+			members = len(joinResp.Joined)
+		} else {
+			log.Debug().Err(err).Msg("방 참가자 목록 가져오기 실패")
+			// 기본값 2명(봇 + 사용자)
+			members = 2
+		}
+		roomName = fmt.Sprintf("Matrix 채팅 (%d명 참가자)", members)
+	}
+
+	// 기본 계정 ID 사용 (여러 계정 관리는 추후 구현)
+	// 이 기능은 아직 구현되지 않았으므로 가장 기본적인 로그만 출력
+	log.Info().Str("roomName", roomName).Msg("새 Chatwoot 대화 생성 필요")
+	return nil
+}
+
+func VerifyFromAuthorizedUser(ctx context.Context, sender id.UserID) bool {
+	return setup.VerifyFromAuthorizedUser(ctx, sender)
+}
+
+func DoRetry[T any](ctx context.Context, action string, fn func(context.Context) (T, error)) (T, error) {
+	return util.DoRetry(ctx, action, fn)
+}

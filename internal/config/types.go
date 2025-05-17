@@ -1,3 +1,7 @@
+// Package config는 애플리케이션의 구성 및 설정 관련 구조체와 함수를 제공합니다.
+// 계정 매핑 관련 구조체와 함수들은 다음 파일들로 분리되었습니다:
+// - account_mapping_types.go: AccountMappingInfo, MatrixIdentityConfig 구조체
+// - account_mapping_manager.go: AccountMappingManager 구조체와 관련 메서드
 package config
 
 import (
@@ -27,32 +31,70 @@ type StartNewChat struct {
 
 // ChatwootAccountConfig는 단일 Chatwoot 계정에 대한 설정을 정의합니다.
 type ChatwootAccountConfig struct {
-	BaseUrl         string                `yaml:"base_url,omitempty"` // 개별 계정별 베이스 URL (비어있으면 전역 설정 사용)
-	AccessTokenFile string                `yaml:"access_token_file"`  // 계정 접근 토큰 파일 경로
-	AccountID       chatwootapi.AccountID `yaml:"account_id"`         // Chatwoot 계정 ID
-	InboxID         chatwootapi.InboxID   `yaml:"inbox_id"`           // Chatwoot 인박스 ID
-	Enabled         bool                  `yaml:"enabled"`            // 이 계정 활성화 여부
+	BaseUrl         string                `yaml:"base_url,omitempty"`
+	AccessTokenFile string                `yaml:"access_token_file"`
+	AccountID       chatwootapi.AccountID `yaml:"account_id"`
+	InboxID         chatwootapi.InboxID   `yaml:"inbox_id"`
+	Enabled         bool                  `yaml:"enabled"`
+}
+
+// DbConfiguration은 데이터베이스 설정만 포함하는 간소화된 설정 구조체입니다.
+type DbConfiguration struct {
+	Database dbutil.Config `yaml:"database"`
+	MasterEncryptionKeyFile string `yaml:"master_encryption_key_file"`
+	LogLevel  string `yaml:"log_level"`
+	LogJSON   bool   `yaml:"log_json"`
+	LogTime   bool   `yaml:"log_time"`
+	LogCaller bool   `yaml:"log_caller"`
+}
+
+// RuntimeConfig는 DB에서 불러온 설정과 실행시간에 필요한 추가 설정을 가지는 구조체입니다.
+type RuntimeConfig struct {
+	Homeserver  string
+	Username    id.UserID
+	Password    string
+	AccessToken string
+	DeviceID    string
+
+	ChatwootBaseUrl string
+	ChatwootAccounts map[chatwootapi.AccountID]*RuntimeChatwootConfig
+
+	MaxMediaWidth       int
+	MaxMediaHeight      int
+	MaxMediaPixels      int
+	MaxMediaSize        int
+	MediaQuality        int
+	MediaConvertWEBP    bool
+
+	Backfill            BackfillConfiguration
+	HomeserverWhitelist HomeserverWhitelist
+	HTTPListenPort      int
+	StartNewChat        StartNewChat
+}
+
+// RuntimeChatwootConfig는 실행시간에 사용되는 Chatwoot 계정 설정입니다.
+type RuntimeChatwootConfig struct {
+	AccountID   chatwootapi.AccountID
+	InboxID     chatwootapi.InboxID
+	BaseURL     string
+	AccessToken string
+	IsEnabled   bool
 }
 
 // Configuration은 애플리케이션의 주요 설정을 정의합니다.
 type Configuration struct {
-	// Authentication settings
 	Homeserver   string    `yaml:"homeserver"`
 	Username     id.UserID `yaml:"username"`
 	PasswordFile string    `yaml:"password_file"`
 
-	// Chatwoot Authentication
-	ChatwootBaseUrl string `yaml:"chatwoot_base_url"` // 기본 Chatwoot URL (모든 계정의 기본값)
-
-	// 기존 단일 계정 구성 (하위 호환성 유지)
+	ChatwootBaseUrl string `yaml:"chatwoot_base_url"`
 	ChatwootAccessTokenFile string                `yaml:"chatwoot_access_token_file,omitempty"`
 	ChatwootAccountID       chatwootapi.AccountID `yaml:"chatwoot_account_id,omitempty"`
 	ChatwootInboxID         chatwootapi.InboxID   `yaml:"chatwoot_inbox_id,omitempty"`
-
-	// 다중 계정 구성
 	ChatwootAccounts []ChatwootAccountConfig `yaml:"chatwoot_accounts,omitempty"`
 
-	// Bot settings
+	MasterEncryptionKeyFile string `yaml:"master_encryption_key_file"`
+
 	MaxMediaWidth    int  `yaml:"max_media_width"`
 	MaxMediaHeight   int  `yaml:"max_media_height"`
 	MaxMediaPixels   int  `yaml:"max_media_pixels"`
@@ -60,21 +102,16 @@ type Configuration struct {
 	MediaQuality     int  `yaml:"media_quality"`
 	MediaConvertWEBP bool `yaml:"media_convert_webp"`
 
-	// Backfill settings
 	Backfill BackfillConfiguration `yaml:"backfill"`
 
-	// Logging configuration
 	LogLevel  string `yaml:"log_level"`
 	LogJSON   bool   `yaml:"log_json"`
 	LogTime   bool   `yaml:"log_time"`
 	LogCaller bool   `yaml:"log_caller"`
 
 	HomeserverWhitelist HomeserverWhitelist `yaml:"homeserver_whitelist"`
-
 	HTTPListenPort int `yaml:"http_listen_port"`
-
 	StartNewChat StartNewChat `yaml:"start_new_chat"`
 
-	// Database configuration
 	Database dbutil.Config `yaml:"database"`
 }

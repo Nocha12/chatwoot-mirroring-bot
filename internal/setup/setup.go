@@ -1,358 +1,178 @@
+// setup.go
 package setup
 
 import (
-	"context"
-	"errors"
 	"fmt"
-	"os"
-	"os/signal"
-	"strings"
-	"sync"
-	"syscall"
-	"time"
-
-	"github.com/rs/zerolog"
-	"go.mau.fi/util/dbutil"
-	"maunium.net/go/mautrix"
-	"maunium.net/go/mautrix/crypto"
-	"maunium.net/go/mautrix/crypto/cryptohelper"
-	"maunium.net/go/mautrix/event"
-	"maunium.net/go/mautrix/id"
-
-	"github.com/Nocha12/chatwoot-mirroring-bot/internal/matrix"
 
 	"github.com/Nocha12/chatwoot-mirroring-bot/internal/config"
 	"github.com/Nocha12/chatwoot-mirroring-bot/internal/database"
+	"github.com/Nocha12/chatwoot-mirroring-bot/internal/database/queries"
 	"github.com/Nocha12/chatwoot-mirroring-bot/pkg/chatwootapi"
+	"github.com/rs/zerolog"
+	"maunium.net/go/mautrix"
+	"maunium.net/go/mautrix/crypto/cryptohelper"
 )
 
-// AppSetup 구조체는 애플리케이션 설정 및 공유 객체를 담고 있습니다.
+// AppSetup는 애플리케이션 실행에 필요한 공유 객체를 담고 있습니다.
 type AppSetup struct {
 	Log              zerolog.Logger
-	Config           *config.Configuration
+	Config           *config.Configuration // 파일 기반 설정인 경우에만
 	DB               *database.Database
 	Client           *mautrix.Client
 	CryptoHelper     *cryptohelper.CryptoHelper
 	ChatwootAPIs     map[chatwootapi.AccountID]*chatwootapi.Client
 	DefaultAccountID chatwootapi.AccountID
+
+	// 계정 매핑 관련 필드
+	AccountMappings  *config.AccountMappingManager
+	ChatwootConfigs  map[int]*config.RuntimeChatwootConfig // ID로 접근하기 위한 Chatwoot 설정 참조
+	MatrixIdentities map[int]*config.MatrixIdentityConfig  // ID로 접근하기 위한 Matrix 아이덴티티 참조
 }
 
-// SetupApp는 애플리케이션의 주요 구성 요소를 초기화합니다.
+// SetupApp은 설정 파일(configPath) 유무에 따라 적절히 로딩 후
+// 로거, DB, Matrix 클라이언트, Chatwoot API 클라이언트를 순차적으로 초기화합니다.
 func SetupApp(configPath string) (*AppSetup, error) {
-	// 설정 파일 로드
-	cfg, err := config.LoadConfig(configPath)
+	// 1) 설정 로드 (파일 또는 DB)
+	cfg, dbCfg, err := LoadConfigFiles(configPath)
 	if err != nil {
-		return nil, fmt.Errorf("설정 파일 로드 실패: %w", err)
+		return nil, err
 	}
 
-	// 로깅 설정
-	logLevelStr := cfg.LogLevel
-	if logLevelStr == "" {
-		logLevelStr = "info" // 기본값
-	}
-	logLevel, err := zerolog.ParseLevel(logLevelStr)
+	// 2) 로거 초기화
+	log, ctx, err := SetupLogger(configPath, cfg, dbCfg)
 	if err != nil {
-		return nil, fmt.Errorf("로그 레벨 파싱 실패: %w", err)
+		return nil, err
 	}
 
-	zerolog.SetGlobalLevel(logLevel)
-	var log zerolog.Logger
-	if cfg.LogJSON {
-		log = zerolog.New(os.Stdout)
+	// 3) 데이터베이스 연결 및 마이그레이션
+	db, err := SetupDatabase(dbCfg, log)
+	if err != nil {
+		return nil, err
+	}
+
+	// 4) 런타임 설정 로드 (항상 데이터베이스에서 계정 정보 로드)
+	var runtimeCfg *config.RuntimeConfig
+	// 항상 마스터 키를 로드하고 데이터베이스에서 계정 정보를 로드
+	var masterKeyFile string
+	if cfg != nil && cfg.MasterEncryptionKeyFile != "" {
+		masterKeyFile = cfg.MasterEncryptionKeyFile
 	} else {
-		log = zerolog.New(zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339})
+		masterKeyFile = dbCfg.MasterEncryptionKeyFile
 	}
 
-	if cfg.LogTime {
-		log = log.With().Timestamp().Logger()
-	}
-
-	if cfg.LogCaller {
-		log = log.With().Caller().Logger()
-	}
-
-	log.Info().Any("config", cfg).Msg("설정 로드 완료")
-	log.Info().Msg("Chatwoot 미러링 봇 시작 중...")
-
-	// 데이터베이스 초기화
-	db, err := dbutil.NewFromConfig("chatwoot", cfg.Database, dbutil.ZeroLogger(log))
+	masterKey, err := config.LoadMasterEncryptionKey(masterKeyFile)
 	if err != nil {
-		return nil, fmt.Errorf("데이터베이스 연결 실패: %w", err)
+		return nil, fmt.Errorf("마스터 암호화 키 로드 실패: %w", err)
 	}
 
-	// 상태 저장소 초기화
-	stateStore := database.NewDatabase()
-	if err := stateStore.Connect(cfg.Database.Type, cfg.Database.URI); err != nil {
-		return nil, fmt.Errorf("데이터베이스 연결 실패: %w", err)
-	}
-	ctx := log.WithContext(context.Background())
-	if err := stateStore.Upgrade(ctx); err != nil {
-		return nil, fmt.Errorf("데이터베이스 업그레이드 실패: %w", err)
-	}
-
-	// Matrix 클라이언트 초기화
-	client, err := mautrix.NewClient(cfg.Homeserver, "", "")
+	// 데이터베이스에서 계정 정보 로드 시도
+	runtimeCfg, err = config.LoadRuntimeConfigFromDb(ctx, db, masterKey, &log)
 	if err != nil {
-		return nil, fmt.Errorf("Matrix 클라이언트 생성 실패: %w", err)
-	}
-	client.Log = log
-
-	// 암호화 헬퍼 초기화
-	cryptoHelper, err := cryptohelper.NewCryptoHelper(client, []byte("chatwoot_cryptostore_key"), db)
-	if err != nil {
-		return nil, fmt.Errorf("암호화 헬퍼 생성 실패: %w", err)
+		// 오류가 있더라도 계속 진행 (설정 파일의 정보를 사용)
+		log.Warn().Err(err).Msg("데이터베이스에서 런타임 설정 로드 실패, 설정 파일 정보를 사용합니다")
+		runtimeCfg = nil
 	}
 
-	// 로그인 정보 설정
-	password, err := cfg.GetPassword(&log)
-	if err != nil {
-		return nil, fmt.Errorf("비밀번호 가져오기 실패: %w", err)
-	}
+	// 5) Matrix 클라이언트 및 암호화 헬퍼 초기화
+	var homeserver, user, password string
 
-	cryptoHelper.LoginAs = &mautrix.ReqLogin{
-		Type:       mautrix.AuthTypePassword,
-		Identifier: mautrix.UserIdentifier{Type: mautrix.IdentifierTypeUser, User: cfg.Username.String()},
-		Password:   password,
-	}
-	cryptoHelper.DBAccountID = cfg.Username.String()
-
-	// 암호화 초기화
-	if err = cryptoHelper.Init(ctx); err != nil {
-		return nil, fmt.Errorf("암호화 헬퍼 초기화 실패: %w", err)
-	}
-
-	// 클라이언트에 암호화 활성화
-	client.Crypto = cryptoHelper
-
-	// Chatwoot API 클라이언트 맵 초기화
-	chatwootAPIs := make(map[chatwootapi.AccountID]*chatwootapi.Client)
-	var defaultAccountID chatwootapi.AccountID
-
-	// 계정 설정 처리
-	for i, accCfg := range cfg.ChatwootAccounts {
-		// 토큰 파일 확인
-		tokenFilePath := accCfg.AccessTokenFile
-		if tokenFilePath == "" {
-			return nil, fmt.Errorf("계정 %d의 액세스 토큰 파일이 없습니다", accCfg.AccountID)
-		}
-
-		// 토큰 파일 읽기
-		tokenBytes, err := os.ReadFile(tokenFilePath)
+	// 항상 데이터베이스 설정을 우선 사용
+	if runtimeCfg != nil && runtimeCfg.Password != "" {
+		// 데이터베이스에서 로드한 계정 정보 사용
+		homeserver = runtimeCfg.Homeserver
+		user = runtimeCfg.Username.String()
+		password = runtimeCfg.Password
+		log.Info().Msg("데이터베이스에서 로드한 Matrix 계정 정보를 사용합니다")
+	} else if cfg != nil {
+		// 설정 파일의 계정 정보 사용 (backup)
+		homeserver = cfg.Homeserver
+		user = cfg.Username.String()
+		pw, err := cfg.GetPassword(&log)
 		if err != nil {
-			return nil, fmt.Errorf("액세스 토큰 파일 읽기 실패: %w", err)
+			// 비밀번호 파일이 없어도 계속 진행 (비어있는 비밀번호 사용)
+			log.Warn().Err(err).Msg("비밀번호 파일에서 Matrix 비밀번호를 가져올 수 없습니다")
+			pw = ""
 		}
-		accessToken := strings.TrimSpace(string(tokenBytes))
-
-		// 첫 번째 계정을 기본값으로 설정
-		if i == 0 {
-			defaultAccountID = accCfg.AccountID
-		}
-
-		// API 클라이언트 생성 및 맵에 추가
-		baseURL := accCfg.BaseUrl
-		if baseURL == "" {
-			baseURL = cfg.ChatwootBaseUrl
-		}
-
-		// API 클라이언트 생성
-		chatwootAPIs[accCfg.AccountID] = chatwootapi.NewClient(
-			baseURL,
-			accCfg.AccountID,
-			accCfg.InboxID,
-			accessToken,
-		)
+		password = pw
+		log.Info().Msg("설정 파일에서 로드한 Matrix 계정 정보를 사용합니다")
+	} else {
+		return nil, fmt.Errorf("Matrix 계정 정보를 데이터베이스나 설정 파일에서 찾을 수 없습니다")
+	}
+	client, cryptoHelper, err := SetupMatrixClient(homeserver, user, password, db, log)
+	if err != nil {
+		return nil, err
 	}
 
-	// 클라이언트 맵이 비었으면 오류 반환
-	if len(chatwootAPIs) == 0 {
-		return nil, errors.New("Chatwoot 계정 설정이 없습니다")
+	// 6) Chatwoot API 클라이언트 맵 생성
+	apis, defaultAccID, err := SetupChatwootAPIs(cfg, runtimeCfg)
+	if err != nil {
+		return nil, err
 	}
 
-	// 이벤트 핸들러 설정
-	setupDecryptErrorCallback(cryptoHelper, log, stateStore, chatwootAPIs, defaultAccountID)
-	setupKeyShareCallback(cryptoHelper)
+	// 7) Matrix 아이덴티티 정보 로드
+	matrixIdentities, err := SetupMatrixIdentities(ctx, db, log)
+	if err != nil {
+		return nil, fmt.Errorf("matrix 아이덴티티 정보 로드 실패: %w", err)
+	}
 
-	// AppSetup 반환
-	return &AppSetup{
-		Log:              log,
-		Config:           cfg,
-		DB:               stateStore,
-		Client:           client,
-		CryptoHelper:     cryptoHelper,
-		ChatwootAPIs:     chatwootAPIs,
-		DefaultAccountID: defaultAccountID,
-	}, nil
-}
-
-// SetupShutdownHandler는 종료 신호를 처리하는 핸들러를 설정합니다.
-func SetupShutdownHandler(ctx context.Context, client *mautrix.Client, cryptoHelper *cryptohelper.CryptoHelper, stateStore matrix.StateStore, log zerolog.Logger) {
-	var syncCancel context.CancelFunc
-	var syncStopWait sync.WaitGroup
-
-	// 신호 처리를 위한 컨텍스트 생성
-	_, syncCancel = context.WithCancel(ctx)
-	syncStopWait.Add(1)
-
-	// 종료 신호 수신 채널 설정
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
-
-	go func() {
-		sig := <-c
-		log.Info().Str("signal", sig.String()).Msg("종료 신호 수신, 정리 중...")
-
-		// 동기화 취소
-		syncCancel()
-		log.Debug().Msg("동기화 중단")
-
-		// 암호화 헬퍼 종료
-		if err := cryptoHelper.Close(); err != nil {
-			log.Error().Err(err).Msg("암호화 헬퍼 종료 오류")
-		}
-
-		// 동기화 종료 대기
-		syncStopWait.Wait()
-		log.Info().Msg("안전하게 종료됨")
-		os.Exit(0)
-	}()
-}
-
-// setupDecryptErrorCallback은 암호화 이벤트 처리 오류 콜백을 설정합니다.
-func setupDecryptErrorCallback(
-	cryptoHelper *cryptohelper.CryptoHelper,
-	log zerolog.Logger,
-	stateStore matrix.StateStore,
-	chatwootAPIs map[chatwootapi.AccountID]*chatwootapi.Client,
-	defaultAccountID chatwootapi.AccountID,
-) {
-	// 복호화 오류 콜백에서는 이벤트 리스너를 설정할 필요가 없습니다.
-
-	// 복호화 오류 콜백 설정
-	cryptoHelper.DecryptErrorCallback = func(evt *event.Event, decryptErr error) {
-		// 이벤트 로그 생성
-		evtLog := log.With().
-			Str("sender", string(evt.Sender)).
-			Str("type", evt.Type.Type).
-			Stringer("room_id", evt.RoomID).
-			Str("event_id", string(evt.ID)).
-			Logger()
-		ctx := evtLog.WithContext(context.Background())
-		evtLog.Error().Err(decryptErr).Msg("메시지 복호화 실패")
-
-		// 오류 세부 정보 기록
-		evtLog.Debug().
-			Stringer("room_id", evt.RoomID).
-			Stringer("sender", evt.Sender).
-			Stringer("event_id", evt.ID).
-			Str("error_type", fmt.Sprintf("%T", decryptErr)).
-			Msg("복호화 오류 세부 정보")
-
-		stateStore.UpdateMostRecentEventIDForRoom(ctx, evt.RoomID, evt.ID)
-
-		// 권한 확인
-		if !VerifyFromAuthorizedUser(ctx, evt.Sender) {
-			return
-		}
-
-		conversationID, accountID, err := stateStore.GetChatwootConversationIDFromMatrixRoom(ctx, evt.RoomID)
+	// 8) Chatwoot 설정 정보를 ID로 접근할 수 있는 맵으로 변환
+	chatwootConfigs := make(map[int]*config.RuntimeChatwootConfig)
+	if cfg == nil {
+		// DB 기반 설정일 경우
+		chatwootDbConfigs, err := queries.GetChatwootConfigs(ctx, db)
 		if err != nil {
-			evtLog.Warn().Err(err).Msg("이 방과 연결된 Chatwoot 대화가 없습니다")
-			return
+			return nil, fmt.Errorf("chatwoot 설정 로드 실패: %w", err)
 		}
 
-		// 세션 키 요청 시도
-		evtLog.Info().Msg("세션 키 요청 시도")
-		if encryptedEvt, ok := evt.Content.Raw["encrypted"].(map[string]interface{}); ok {
-			if alg, exists := encryptedEvt["algorithm"].(string); exists && alg == string(id.AlgorithmMegolmV1) {
-				sessionID, _ := encryptedEvt["session_id"].(string)
-				evtLog.Info().
-					Str("session_id", sessionID).
-					Msg("Megolm 세션 키 요청")
+		for _, chatwootConfig := range chatwootDbConfigs {
+			if !chatwootConfig.IsEnabled {
+				continue
+			}
+
+			// runtimeCfg에서 해당 계정에 대한 정보 찾기
+			if accCfg, exists := runtimeCfg.ChatwootAccounts[chatwootConfig.AccountID]; exists {
+				chatwootConfigs[chatwootConfig.ID] = accCfg
 			}
 		}
-
-		// 계정 ID 값은 이미 chatwootapi.AccountID 타입으로 반환됨
-		evtLog.Info().Int("account_id", int(accountID)).Msg("사용할 계정 ID")
-
-		// API 클라이언트 가져오기
-		api := GetChatwootAPIForAccount(chatwootAPIs, accountID, defaultAccountID)
-
-		// 비공개 오류 메시지 전송
-		DoRetry(ctx,
-			fmt.Sprintf("send private error message to %d for %+v", conversationID, decryptErr),
-			func(ctx context.Context) (*chatwootapi.Message, error) {
-				return api.SendPrivateMessage(
-					ctx,
-					conversationID,
-					fmt.Sprintf("**Matrix 이벤트 (%s) 복호화 실패. 메시지를 받지 못했을 수 있습니다!**\n\n오류: %+v", evt.ID, decryptErr))
-			})
+	} else {
+		// 파일 기반 설정일 경우 - 현재 이 기능은 지원하지 않음 (추후 구현 예정)
+		log.Warn().Msg("파일 기반 설정에서는 계정 매핑 기능을 완전히 지원하지 않습니다")
 	}
-}
 
-// setupKeyShareCallback은 키 공유 허용 설정을 합니다.
-func setupKeyShareCallback(cryptoHelper *cryptohelper.CryptoHelper) {
-	// 모든 키 공유 요청 허용
-	cryptoHelper.Machine().AllowKeyShare = func(ctx context.Context, device *id.Device, info event.RequestedKeyInfo) *crypto.KeyShareRejection {
-		log := zerolog.Ctx(ctx)
-
-		// 키 공유 요청에 대해 자세한 로그 추가
-		log.Info().
-			Str("user_id", device.UserID.String()).
-			Str("device_id", device.DeviceID.String()).
-			Str("session_id", string(info.SessionID)).
-			Msg("키 공유 요청 허용됨")
-
-		// 거부 없이 null 반환 = 허용
-		return nil
-	}
-}
-
-// VerifyFromAuthorizedUser는 사용자가 적절한 권한을 가지고 있는지 확인합니다.
-func VerifyFromAuthorizedUser(ctx context.Context, sender id.UserID) bool {
-	// TODO: 권한 확인 로직 구현
-	return true
-}
-
-// DoRetry는 함수 실행을 재시도하는 범용 헬퍼 함수입니다.
-func DoRetry[T any](ctx context.Context, action string, fn func(context.Context) (T, error)) (T, error) {
-	var zero T
-	log := zerolog.Ctx(ctx)
-
-	var err error
-	var result T
-
-	for i := 0; i < 5; i++ {
-		if i > 0 {
-			log.Debug().Int("attempt", i+1).Msg(fmt.Sprintf("재시도 중: %s", action))
+	// 9) 계정 매핑 정보 로드
+	var accountMappings *config.AccountMappingManager
+	if cfg == nil {
+		// DB 기반 설정일 경우에만 계정 매핑 사용
+		accountMappings, err = SetupAccountMappings(ctx, db, chatwootConfigs, matrixIdentities, log)
+		if err != nil {
+			log.Warn().Err(err).Msg("계정 매핑 정보 로드 실패, 엔티티에 다른 매핑은 사용할 수 없습니다")
+			accountMappings = config.NewAccountMappingManager() // 기본 매니저 생성
 		}
-
-		result, err = fn(ctx)
-		if err == nil {
-			return result, nil
-		}
-
-		log.Error().Err(err).Int("attempt", i+1).Msg(fmt.Sprintf("실패: %s", action))
+	} else {
+		// 파일 기반 설정일 경우 빈 매니저 생성
+		accountMappings = config.NewAccountMappingManager()
 	}
 
-	return zero, fmt.Errorf("최대 재시도 횟수 초과: %s: %w", action, err)
-}
+	// 10) 콜백 및 종료 핸들러 등록
+	SetupCallbacks(cryptoHelper, log, db, apis, defaultAccID)
+	SetupShutdownHandler(ctx, client, cryptoHelper, db, log)
 
-// GetChatwootAPIForAccount는 지정된 계정 ID에 대한 API 클라이언트를 반환합니다.
-func GetChatwootAPIForAccount(
-	chatwootAPIs map[chatwootapi.AccountID]*chatwootapi.Client,
-	accountID chatwootapi.AccountID,
-	defaultAccountID chatwootapi.AccountID,
-) *chatwootapi.Client {
-	if accountID <= 0 {
-		// 유효하지 않은 계정 ID는 기본 계정 사용
-		accountID = defaultAccountID
+	// 11) AppSetup 조립 및 반환
+	app := &AppSetup{
+		Log:              log,
+		DB:               db,
+		Client:           client,
+		CryptoHelper:     cryptoHelper,
+		ChatwootAPIs:     apis,
+		DefaultAccountID: defaultAccID,
+		AccountMappings:  accountMappings,
+		ChatwootConfigs:  chatwootConfigs,
+		MatrixIdentities: matrixIdentities,
+	}
+	if cfg != nil {
+		app.Config = cfg
 	}
 
-	api, exists := chatwootAPIs[accountID]
-	if !exists {
-		// 해당 계정 ID에 대한 API 클라이언트가 없으면 기본 계정 사용
-		api = chatwootAPIs[defaultAccountID]
-	}
-
-	return api
+	log.Info().Int("active_mappings", len(accountMappings.GetAllActiveMappings())).Msg("계정 매핑 관리자 초기화 완료")
+	return app, nil
 }

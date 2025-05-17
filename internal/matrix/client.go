@@ -62,29 +62,29 @@ func NewClientAdapter(client *ClientImpl) *ClientAdapter {
 
 // UserID는 사용자 ID를 반환합니다.
 func (ca *ClientAdapter) UserID() id.UserID {
-	return ca.ClientImpl.Client.UserID
+	return ca.Client.UserID
 }
 
 // SendMessageEvent는 메시지 이벤트를 전송합니다.
 func (ca *ClientAdapter) SendMessageEvent(ctx context.Context, roomID id.RoomID, eventType event.Type, content interface{}, opts ...mautrix.ReqSendEvent) (*mautrix.RespSendEvent, error) {
 	// 옵션을 무시하고 기본 동작만 수행
-	return ca.ClientImpl.Client.SendMessageEvent(ctx, roomID, eventType, content, opts...)
+	return ca.Client.SendMessageEvent(ctx, roomID, eventType, content, opts...)
 }
 
 // GetEvent는 이벤트를 조회합니다.
 func (ca *ClientAdapter) GetEvent(ctx context.Context, roomID id.RoomID, eventID id.EventID) (*event.Event, error) {
-	return ca.ClientImpl.Client.GetEvent(ctx, roomID, eventID)
+	return ca.Client.GetEvent(ctx, roomID, eventID)
 }
 
 // RedactEvent는 이벤트를 삭제합니다.
 func (ca *ClientAdapter) RedactEvent(ctx context.Context, roomID id.RoomID, eventID id.EventID, opts ...mautrix.ReqRedact) (*mautrix.RespSendEvent, error) {
 	// 옵션을 그대로 전달
-	return ca.ClientImpl.Client.RedactEvent(ctx, roomID, eventID, opts...)
+	return ca.Client.RedactEvent(ctx, roomID, eventID, opts...)
 }
 
 // State는 방의 상태를 조회합니다.
 func (ca *ClientAdapter) State(ctx context.Context, roomID id.RoomID) (mautrix.RoomStateMap, error) {
-	return ca.ClientImpl.Client.State(ctx, roomID)
+	return ca.Client.State(ctx, roomID)
 }
 
 // MautrixClientAdapter는 mautrix.Client를 MatrixClient 인터페이스로 변환하는 어댑터입니다.

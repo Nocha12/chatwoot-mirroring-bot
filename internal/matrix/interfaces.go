@@ -25,10 +25,10 @@ type MatrixClient interface {
 
 // StateStore는 상태 저장 인터페이스를 정의합니다.
 type StateStore interface {
-	StoreMatrixEventToChatwootMessage(ctx context.Context, accountID chatwootapi.AccountID, roomID id.RoomID, eventID id.EventID, conversationID chatwootapi.ConversationID, messageID chatwootapi.MessageID) error
+	StoreMatrixEventToChatwootMessage(ctx context.Context, accountID chatwootapi.AccountID, eventID id.EventID, messageID chatwootapi.MessageID) error
 	GetChatwootMessageFromMatrixEvent(ctx context.Context, roomID id.RoomID, eventID id.EventID) (chatwootapi.ConversationID, chatwootapi.MessageID, error)
 	GetMatrixEventFromChatwootMessage(ctx context.Context, accountID chatwootapi.AccountID, conversationID chatwootapi.ConversationID, messageID chatwootapi.MessageID) (id.RoomID, id.EventID, error)
-	DeleteMatrixEventForChatwootMessage(ctx context.Context, accountID chatwootapi.AccountID, conversationID chatwootapi.ConversationID, messageID chatwootapi.MessageID) error
+	DeleteMatrixEventForChatwootMessage(ctx context.Context, accountID chatwootapi.AccountID, messageID chatwootapi.MessageID) error
 	GetChatwootConversationIDFromMatrixRoom(ctx context.Context, roomID id.RoomID) (chatwootapi.ConversationID, chatwootapi.AccountID, error)
 	GetAccountAndInboxIDForConversation(ctx context.Context, roomID id.RoomID) (chatwootapi.AccountID, chatwootapi.InboxID, error)
 	UpdateMostRecentEventIDForRoom(ctx context.Context, roomID id.RoomID, eventID id.EventID) error
@@ -41,7 +41,7 @@ type StateStore interface {
 
 // MessageHelper는 메시지 처리 인터페이스를 정의합니다.
 type MessageHelper interface {
-	HandleMatrixMessageContent(ctx context.Context, evt *event.Event, conversationID chatwootapi.ConversationID, content *event.MessageEventContent) ([]*chatwootapi.Message, error)
+	HandleMatrixMessageContent(ctx context.Context, evt *event.Event, accountID chatwootapi.AccountID, conversationID chatwootapi.ConversationID, content *event.MessageEventContent) ([]*chatwootapi.Message, error)
 	HandleMatrixReaction(ctx context.Context, evt *event.Event, targetRoomID id.RoomID, targetEventID id.EventID) error
 	HandleMatrixRedaction(ctx context.Context, evt *event.Event, targetRoomID id.RoomID, targetEventID id.EventID) error
 }

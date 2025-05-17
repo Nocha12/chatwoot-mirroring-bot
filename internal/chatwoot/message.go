@@ -1,419 +1,195 @@
 package chatwoot
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
-	"image"
-	_ "image/gif"
-	_ "image/jpeg"
-	_ "image/png"
-	"net/http"
-	"net/url"
-	"strconv"
 	"strings"
-	"time"
+	"sync"
 
 	"github.com/rs/zerolog"
 	"maunium.net/go/mautrix"
-	"maunium.net/go/mautrix/crypto/attachment"
 	"maunium.net/go/mautrix/event"
-	"maunium.net/go/mautrix/format"
 	"maunium.net/go/mautrix/id"
 
-	"github.com/Nocha12/chatwoot-mirroring-bot/internal/config"
-	"github.com/Nocha12/chatwoot-mirroring-bot/internal/database"
 	"github.com/Nocha12/chatwoot-mirroring-bot/internal/database/queries"
-	"github.com/Nocha12/chatwoot-mirroring-bot/internal/matrix"
-	"github.com/Nocha12/chatwoot-mirroring-bot/internal/util"
 	"github.com/Nocha12/chatwoot-mirroring-bot/pkg/chatwootapi"
 )
 
-// HandleMessageCreated processes new messages from Chatwoot
-func HandleMessageCreated(ctx context.Context, mc chatwootapi.MessageCreated, accountID chatwootapi.AccountID, chatwootAPI *chatwootapi.Client, matrixClient *mautrix.Client, stateStore matrix.StateStore, cfg interface{}) error {
+// SendMessage는 Matrix 방에 메시지를 전송하는 함수입니다.
+func (h *MessageHandler) SendMessage(ctx context.Context, roomID id.RoomID, content *event.MessageEventContent, extraContent ...map[string]any) (resp *mautrix.RespSendEvent, err error) {
+	lock, ok := h.RoomSendlocks[roomID]
+	if !ok {
+		lock = &sync.Mutex{}
+		h.RoomSendlocks[roomID] = lock
+	}
+
+	lock.Lock()
+	defer lock.Unlock()
+
+	// content를 기본 맵으로 변환
+	mergedContent := map[string]interface{}{
+		"msgtype": content.MsgType,
+		"body":    content.Body,
+	}
+
+	if content.Format != "" {
+		mergedContent["format"] = content.Format
+	}
+
+	if content.FormattedBody != "" {
+		mergedContent["formatted_body"] = content.FormattedBody
+	}
+
+	// 추가 컨텐츠 병합
+	for _, extra := range extraContent {
+		for key, value := range extra {
+			mergedContent[key] = value
+		}
+	}
+
+	return h.Client.SendMessageEvent(ctx, roomID, event.EventMessage, mergedContent)
+}
+
+// HandleMessageCreated는 Chatwoot에서 메시지가 생성되었을 때 실행되는 핸들러입니다.
+func (h *MessageHandler) HandleMessageCreated(ctx context.Context, mc chatwootapi.MessageCreated) error {
 	log := zerolog.Ctx(ctx).With().
-		Str("component", "handle_message_created").
-		Int("message_id", int(mc.ID)).
 		Int("conversation_id", int(mc.Conversation.ID)).
-		Int("account_id", int(accountID)).
+		Int("message_id", int(mc.ID)).
 		Logger()
-
-	// 컨텍스트 타임아웃 추가
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
 	ctx = log.WithContext(ctx)
 
-	// Skip private messages
+	log.Debug().Msg("Chatwoot 메시지 생성 이벤트 처리 시작")
+
+	// 비공개(private) 메시지는 처리하지 않음
 	if mc.Private {
+		log.Debug().Msg("비공개 메시지 무시")
 		return nil
 	}
 
-	// chatwootapi.ConversationID로 변환
-	cwConvID := chatwootapi.ConversationID(mc.Conversation.ID)
+	// 아웃바운드(outgoing) 메시지는 처리하지 않음 (Matrix -> Chatwoot 방향은 이미 처리됨)
+	if mc.MessageType == "outgoing" {
+		// 메시지 ID가 이미 DB에 있는지 확인
+		matrixEventID, err := queries.GetMatrixEventFromChatwootMessage(ctx, h.StateStore.DB, int(mc.Conversation.AccountID), chatwootapi.MessageID(mc.ID))
+		if err == nil && matrixEventID != "" {
+			log.Debug().Str("matrix_event_id", string(matrixEventID)).Msg("아웃바운드 메시지 연결 정보 찾음, 무시")
+			return nil
+		} else {
+			log.Debug().Err(err).Msg("아웃바운드 메시지지만 Matrix 이벤트 ID 매핑을 찾을 수 없음")
+		}
+	}
 
-	roomID, _, err := stateStore.GetMatrixRoomFromChatwootConversation(ctx, cwConvID, accountID)
+	// 삭제된 메시지인 경우 (Content 필드가 비어있고 ContentAttributes.Deleted = true)
+	if mc.Content == "" && mc.ContentAttributes != nil && mc.ContentAttributes.Deleted {
+		log.Debug().Msg("삭제된 메시지 감지, Matrix에서도 삭제 처리")
+		// DB에서 Matrix 이벤트 ID 조회
+		matrixEventID, err := queries.GetMatrixEventFromChatwootMessage(ctx, h.StateStore.DB, int(mc.Conversation.AccountID), chatwootapi.MessageID(mc.ID))
+		if err != nil {
+			log.Warn().Err(err).Msg("삭제된 메시지에 대한 Matrix 이벤트 ID를 찾을 수 없음")
+			return nil
+		}
+
+		// Matrix 방 ID 조회
+		convID := chatwootapi.ConversationID(mc.Conversation.ID)
+		accountID := chatwootapi.AccountID(mc.Conversation.AccountID)
+		roomID, _, err := h.StateStore.GetMatrixRoomFromChatwootConversation(ctx, convID, accountID)
+		if err != nil {
+			log.Warn().Err(err).Msg("Chatwoot 대화에 대한 Matrix 방을 찾을 수 없음")
+			return nil
+		}
+
+		// Matrix에서 메시지 삭제 (redact)
+		_, err = h.Client.RedactEvent(ctx, roomID, matrixEventID)
+		if err != nil {
+			log.Error().Err(err).Msg("Matrix 메시지 삭제 실패")
+			return err
+		}
+
+		// DB에서도 매핑 정보 삭제
+		// err = queries.DeleteMatrixEventForChatwootMessage(ctx, h.StateStore.DB, chatwootapi.AccountID(mc.Conversation.AccountID), chatwootapi.ConversationID(mc.Conversation.ID), chatwootapi.MessageID(mc.ID))
+		// if err != nil {
+		// 	log.Warn().Err(err).Msg("DB에서 메시지 매핑 정보 삭제 실패")
+		// }
+
+		log.Info().Str("matrix_event_id", string(matrixEventID)).Msg("Matrix 메시지 삭제 완료")
+		return nil
+	}
+
+	// 대화 상태 확인 및 처리
+	convID := chatwootapi.ConversationID(mc.Conversation.ID)
+	accountID := chatwootapi.AccountID(mc.Conversation.AccountID)
+	roomID, _, err := h.StateStore.GetMatrixRoomFromChatwootConversation(ctx, convID, accountID)
 	if err != nil {
-		if errors.Is(err, queries.ErrNotFound) {
-			log.Err(err).Msg("couldn't find room for conversation")
+		log.Warn().Err(err).Msg("Chatwoot 대화에 대한 Matrix 방을 찾을 수 없음")
+		// TODO: 방이 없는 경우 새로 생성하는 로직 추가 가능
+		return err
+	}
 
-			// 새 채팅 시작 기능 활성화 확인
-			// 설정 값 추출 - config 패키지의 적절한 메서드 사용 필요
-			enableNewChat := false // 기본값
-			cfgMap, ok := cfg.(map[string]interface{})
-			if ok {
-				startNewChat, exists := cfgMap["start_new_chat"]
-				if exists {
-					if startNewChatMap, ok := startNewChat.(map[string]interface{}); ok {
-						if enable, ok := startNewChatMap["enable"].(bool); ok {
-							enableNewChat = enable
-						}
-					}
+	// 방 존재 여부 검증
+	exists, err := h.validateRoomExists(ctx, roomID)
+	if err != nil {
+		log.Error().Err(err).Msg("방 존재 여부 확인 실패")
+		return err
+	}
+	if !exists {
+		log.Warn().Msg("Matrix 방이 존재하지 않음")
+		return fmt.Errorf("matrix 방 %s이(가) 존재하지 않음", roomID)
+	}
+
+	// 메시지 내용 준비
+	msgContent := &event.MessageEventContent{
+		MsgType: event.MsgText,
+		Body:    mc.Content, // 기본 텍스트
+	}
+
+	// HTML 형식이 있다면 처리
+	if mc.ContentType == "text" {
+		// Matrix HTML 형식으로 변환
+		formattedBody := mc.Content
+		// 간단한 마크다운 -> HTML 변환 (실제로는 더 복잡한 변환 로직이 필요할 수 있음)
+		formattedBody = strings.ReplaceAll(formattedBody, "\n", "<br>")
+		msgContent.Format = event.FormatHTML
+		msgContent.FormattedBody = formattedBody
+	}
+
+	// 첨부파일 처리
+	var sentEvent *mautrix.RespSendEvent
+	if mc.ContentAttributes != nil && mc.ContentAttributes.Attachments != nil && len(mc.ContentAttributes.Attachments) > 0 {
+		log.Debug().Int("attachment_count", len(mc.ContentAttributes.Attachments)).Msg("첨부파일 처리 시작")
+
+		// 첫 번째 첨부파일만 처리 (여러 개 있을 경우 나머지는 추가 메시지로 전송 가능)
+		attachment := mc.ContentAttributes.Attachments[0]
+		sentEvent, err = h.handleAttachment(ctx, roomID, mc.ID, attachment)
+		if err != nil {
+			log.Error().Err(err).Msg("첨부파일 처리 실패")
+			// 첨부파일 처리 실패시에도 텍스트 메시지는 보낼 수 있도록 진행
+		} else {
+			// 첨부파일이 성공적으로 전송된 경우, 텍스트가 없으면 텍스트 메시지 전송 불필요
+			if mc.Content == "" {
+				// 첨부파일만 있는 경우 DB에 매핑 저장 후 종료
+				err = queries.StoreMatrixEventForChatwootMessage(ctx, h.StateStore.DB, int(mc.Conversation.AccountID), chatwootapi.MessageID(mc.ID), sentEvent.EventID)
+				if err != nil {
+					log.Warn().Err(err).Msg("DB에 메시지 매핑 저장 실패")
 				}
+				return nil
 			}
+		}
+	}
 
-			if !enableNewChat {
-				log.Error().Msg("couldn't find room and start new chat is disabled")
-				return errors.New("room not found and start new chat is disabled")
-			}
-
-			// 새 채팅방 생성 요청만 하고 구현은 일단 보류
-			log.Warn().Msg("createNewChatRoom 기능은 아직 구현되지 않았습니다")
-			return errors.New("room creation not implemented yet")
-		} else {
-			log.Err(err).Msg("error finding room for conversation")
+	// 텍스트 메시지 전송 (첨부파일이 없거나, 첨부파일과 텍스트가 모두 있는 경우)
+	if sentEvent == nil || mc.Content != "" {
+		sentEvent, err = h.SendMessage(ctx, roomID, msgContent)
+		if err != nil {
+			log.Error().Err(err).Msg("Matrix 메시지 전송 실패")
 			return err
 		}
 	}
 
-	log = log.With().Stringer("room_id", roomID).Logger()
-	ctx = log.WithContext(ctx)
-
-	// 동시 처리 방지를 위한 락 사용 (rooms.go에서 가져옴)
-	matrixRoomLock := matrix.GetOrCreateRoomLock(roomID)
-	matrixRoomLock.Lock()
-	log.Debug().Msg("acquired send lock")
-	defer matrixRoomLock.Unlock()
-	defer log.Debug().Msg("released send lock")
-
-	// 이미 처리된 메시지인지 확인
-	// 기존 코드는 구현되지 않은 메서드를 호출하고 있으므로 stateStore 인터페이스를 활용
-	messageIDs, accountIDInt, err := stateStore.GetChatwootMessageIDsForMatrixEventID(ctx, id.EventID(fmt.Sprintf("%d", mc.ID)))
-	hasEvent := err == nil && len(messageIDs) > 0
-
-	// 삭제된 메시지 처리
-	if mc.ContentAttributes != nil && mc.ContentAttributes.Deleted {
-		log.Info().Int("message_id", int(mc.ID)).Msg("message deleted")
-
-		// 실제 메시지 삭제 처리 - 삭제할 이벤트 ID 목록이 필요하므로 우선 구현 보류
-		log.Warn().Msg("메시지 삭제 기능은 아직 구현되지 않았습니다")
-		return nil
+	// 메시지 매핑 저장 (DB에 이벤트 ID와 Chatwoot 메시지 ID 매핑)
+	err = queries.StoreMatrixEventForChatwootMessage(ctx, h.StateStore.DB, int(mc.Conversation.AccountID), chatwootapi.MessageID(mc.ID), sentEvent.EventID)
+	if err != nil {
+		log.Warn().Err(err).Msg("DB에 메시지 매핑 저장 실패")
 	}
 
-	// 이미 처리된 메시지인 경우 스킵
-	if hasEvent {
-		log.Info().
-			Any("message_ids", messageIDs).
-			Int("account_id", int(accountIDInt)).
-			Msg("chatwoot message already processed")
-		return nil
-	}
-
-	// 메시지 처리
-	var resp *mautrix.RespSendEvent
-	message := mc.Conversation.Messages[0]
-
-	// 텍스트 메시지 처리
-	if message.Content != nil {
-		var messageEventContent event.MessageEventContent
-
-		// Sender.AvailableName 필드가 없으므로 대신 Name 사용
-		senderName := message.Sender.Name
-
-		messageText := fmt.Sprintf("%s - %s", *message.Content, strings.Split(senderName, " ")[0])
-
-		// 설정 값 추출 - config 패키지의 적절한 메서드 사용 필요
-		renderMarkdown := false // 기본값
-		cfgMap, ok := cfg.(map[string]interface{})
-		if ok {
-			if render, ok := cfgMap["render_markdown"].(bool); ok {
-				renderMarkdown = render
-			}
-		}
-
-		if renderMarkdown {
-			messageEventContent = format.RenderMarkdown(messageText, true, true)
-		} else {
-			messageEventContent = event.MessageEventContent{MsgType: event.MsgText, Body: messageText}
-		}
-
-		// MatrixClient 인터페이스에 맞게 matrixClient를 래핑
-		clientAdapter := matrix.NewMautrixClientAdapter(matrixClient)
-
-		resp, err = matrix.SendMessage(ctx, clientAdapter, roomID, &messageEventContent, map[string]any{
-			"com.beeper.chatwoot.message_id": mc.ID,
-		})
-		if err != nil {
-			return err
-		}
-
-		// EventID에 대한 MessageID 매핑 저장
-		cwMsgID := chatwootapi.MessageID(mc.ID)
-		err = stateStore.StoreMatrixEventToChatwootMessage(ctx, accountID, roomID, resp.EventID, cwConvID, cwMsgID)
-		if err != nil {
-			log.Err(err).Msg("메시지 매핑 저장 실패")
-			// 저장 실패해도 전송은 된 상태이므로 오류 무시
-		}
-	}
-
-	// 첨부파일 처리는 별도 함수로 분리하여 구현할 수 있도록 준비
-	for _, a := range message.Attachments {
-		// 첨부파일 처리 기능 구현 전까지는 로그만 남김
-		log.Info().
-			Str("file_type", a.FileType).
-			Int("file_size", a.FileSize).
-			Str("data_url", a.DataURL).
-			Msg("첨부파일 처리 필요")
-	}
-
+	log.Info().Str("matrix_event_id", string(sentEvent.EventID)).Msg("Matrix 메시지 전송 완료")
 	return nil
-}
-
-// createNewChatRoom 새 채팅방을 생성하고 데이터베이스에 매핑 정보를 저장합니다
-func createNewChatRoom(ctx context.Context, mc chatwootapi.MessageCreated, accountID string, startNewChatCfg config.StartNewChat, stateStore *database.Database, matrixClient *mautrix.Client) (id.RoomID, error) {
-	log := zerolog.Ctx(ctx).With().
-		Bool("snc_enabled", true).
-		Logger()
-
-	// 새 방 생성 API 호출
-	type StartNewChatResp struct {
-		RoomID id.RoomID `json:"room_id,omitempty"`
-		Error  string    `json:"error,omitempty"`
-	}
-
-	// Create a new room for this conversation using the start new chat endpoint
-	body, err := json.Marshal(mc.Conversation.Meta.Sender)
-	if err != nil {
-		log.Err(err).Msg("failed to marshal sender to JSON")
-		return "", err
-	}
-
-	req, err := http.NewRequest(http.MethodPost, startNewChatCfg.Endpoint, bytes.NewReader(body))
-	if err != nil {
-		log.Err(err).Msg("failed to create request")
-		return "", err
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", startNewChatCfg.Token))
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		log.Err(err).Msg("failed to make request")
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	var sncResp StartNewChatResp
-	err = json.NewDecoder(resp.Body).Decode(&sncResp)
-	if err != nil {
-		log.Err(err).Msg("failed to read response body")
-		return "", err
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		log.Warn().Int("status_code", resp.StatusCode).Any("resp", sncResp).Msg("failed to create new chat")
-		return "", fmt.Errorf("failed to create new chat: %s", sncResp.Error)
-	} else if sncResp.RoomID == "" {
-		log.Warn().Any("resp", sncResp).Msg("invalid start new chat response")
-		return "", fmt.Errorf("invalid start new chat response: %s", sncResp.Error)
-	}
-
-	log = log.With().Stringer("room_id", sncResp.RoomID).Logger()
-	log.Info().Msg("created new chat for conversation")
-
-	// DB에 방-대화 매핑 저장
-	accountIDInt, err := strconv.Atoi(accountID)
-	if err != nil {
-		log.Err(err).Msg("failed to convert account ID to integer")
-		return "", err
-	}
-	err = stateStore.StoreMatrixRoomForChatwootConversation(ctx, sncResp.RoomID, chatwootapi.ConversationID(mc.Conversation.ID), chatwootapi.AccountID(accountIDInt))
-	if err != nil {
-		log.Err(err).Msg("failed to store room-conversation mapping")
-		return "", err
-	}
-
-	// 방 상태 확인
-	_, err = matrixClient.State(ctx, sncResp.RoomID)
-	if err != nil {
-		log.Err(err).Msg("failed to get room state")
-		return "", err
-	}
-
-	return sncResp.RoomID, nil
-}
-
-// handleAttachment processes and sends attachments from Chatwoot to Matrix
-func handleAttachment(ctx context.Context, roomID id.RoomID, chatwootMessageID chatwootapi.MessageID, chatwootAttachment chatwootapi.Attachment, accountID string, chatwootAPI *chatwootapi.Client, matrixClient *mautrix.Client, msgEventMap matrix.StateStore) (*mautrix.RespSendEvent, error) {
-	log := zerolog.Ctx(ctx).With().
-		Str("func", "handleAttachment").
-		Int("attachment_id", int(chatwootAttachment.ID)).
-		Str("attachment_file_type", chatwootAttachment.FileType).
-		Logger()
-	ctx = log.WithContext(ctx)
-
-	// 첨부파일 다운로드
-	attachmentData, err := util.DoRetryArr(ctx, fmt.Sprintf("Download attachment: %s", chatwootAttachment.DataURL), func(ctx context.Context) ([]byte, error) {
-		return chatwootAPI.DownloadAttachment(ctx, chatwootAttachment.DataURL)
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	if len(attachmentData) != chatwootAttachment.FileSize {
-		return nil, fmt.Errorf("downloaded attachment size (%d) does not match expected size (%d)", len(attachmentData), chatwootAttachment.FileSize)
-	}
-
-	// 파일 정보 구성
-	mimeType := http.DetectContentType(attachmentData)
-	log.Info().Str("mime_type", mimeType).Msg("downloaded attachment")
-	info := &event.FileInfo{
-		MimeType: mimeType,
-		Size:     chatwootAttachment.FileSize,
-	}
-
-	// 이미지 크기 계산
-	if strings.HasPrefix(mimeType, "image/") {
-		img, _, err := image.Decode(bytes.NewReader(attachmentData))
-		if err != nil {
-			log.Warn().Err(err).Msg("failed to decode image")
-		} else {
-			bounds := img.Bounds()
-			info.Width = bounds.Dx()
-			info.Height = bounds.Dy()
-		}
-	}
-
-	// 썸네일 처리
-	if len(chatwootAttachment.ThumbURL) > 0 {
-		// 썸네일 다운로드
-		thumbnailData, err := util.DoRetryArr(ctx, fmt.Sprintf("Download attachment thumbnail: %s", chatwootAttachment.ThumbURL), func(ctx context.Context) ([]byte, error) {
-			return chatwootAPI.DownloadAttachment(ctx, chatwootAttachment.ThumbURL)
-		})
-		if err != nil {
-			return nil, err
-		}
-
-		// 썸네일 정보 계산
-		thumbnailMimeType := http.DetectContentType(thumbnailData)
-		info.ThumbnailInfo = &event.FileInfo{
-			MimeType: thumbnailMimeType,
-			Size:     len(thumbnailData),
-		}
-
-		thumbnailImage, _, err := image.Decode(bytes.NewReader(thumbnailData))
-		if err != nil {
-			log.Warn().Err(err).Msg("failed to decode image")
-		} else {
-			bounds := thumbnailImage.Bounds()
-			info.ThumbnailInfo.Width = bounds.Dx()
-			info.ThumbnailInfo.Height = bounds.Dy()
-		}
-
-		// 썸네일 암호화
-		info.ThumbnailFile = &event.EncryptedFileInfo{
-			EncryptedFile: *attachment.NewEncryptedFile(),
-			URL:           "",
-		}
-		info.ThumbnailFile.EncryptInPlace(thumbnailData)
-
-		// 썸네일 업로드
-		uploadedThumbnail, err := util.DoRetry(ctx, "upload thumbnail to Matrix", func(ctx context.Context) (*mautrix.RespMediaUpload, error) {
-			return matrixClient.UploadMedia(ctx, mautrix.ReqUploadMedia{
-				ContentBytes:  thumbnailData,
-				ContentLength: int64(len(thumbnailData)),
-				ContentType:   "application/octet-stream",
-			})
-		})
-		if err != nil {
-			return nil, err
-		}
-		info.ThumbnailFile.URL = uploadedThumbnail.ContentURI.CUString()
-	}
-
-	// 파일 암호화
-	file := &event.EncryptedFileInfo{
-		EncryptedFile: *attachment.NewEncryptedFile(),
-		URL:           "",
-	}
-	file.EncryptInPlace(attachmentData)
-
-	// 파일명 추출
-	filename := "unknown"
-	parsed, err := url.Parse(chatwootAttachment.DataURL)
-	if err == nil {
-		pathParts := strings.Split(parsed.Path, "/")
-		if len(pathParts) > 0 {
-			filename = pathParts[len(pathParts)-1]
-		}
-	}
-
-	// 첨부파일 업로드
-	uploadedFile, err := util.DoRetry(ctx, "upload attachment to Matrix", func(ctx context.Context) (*mautrix.RespMediaUpload, error) {
-		return matrixClient.UploadMedia(ctx, mautrix.ReqUploadMedia{
-			ContentBytes:  attachmentData,
-			ContentLength: int64(len(attachmentData)),
-			ContentType:   "application/octet-stream",
-		})
-	})
-	if err != nil {
-		return nil, err
-	}
-	file.URL = uploadedFile.ContentURI.CUString()
-
-	// Matrix 메시지 내용 구성
-	msgType := event.MsgFile
-	if strings.HasPrefix(mimeType, "image/") {
-		msgType = event.MsgImage
-	} else if strings.HasPrefix(mimeType, "video/") {
-		msgType = event.MsgVideo
-	} else if strings.HasPrefix(mimeType, "audio/") {
-		msgType = event.MsgAudio
-	}
-
-	content := &event.MessageEventContent{
-		MsgType: msgType,
-		Body:    filename,
-		Info:    info,
-		File:    file,
-	}
-
-	// matrixClient를 matrix.MatrixClient 인터페이스로 변환
-	matrixAdapter := matrix.NewMautrixClientAdapter(matrixClient)
-
-	// 첨부파일 메시지 전송 및 ID 매핑 저장
-	resp, err := matrix.SendMessage(ctx, matrixAdapter, roomID, content, map[string]any{
-		"com.beeper.chatwoot.message_id": chatwootMessageID,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	// accountID 타입 변환
-	aID, err := strconv.Atoi(accountID)
-	if err != nil {
-		log.Error().Err(err).Str("account_id", accountID).Msg("accountID 숫자 변환 실패")
-		return nil, fmt.Errorf("accountID 변환 오류: %w", err)
-	}
-	accountIDTyped := chatwootapi.AccountID(aID)
-	// StateStore 인터페이스 사용
-	conversationID := chatwootapi.ConversationID(0) // 대화 ID를 알 수 없는 경우
-	err = msgEventMap.StoreMatrixEventToChatwootMessage(ctx, accountIDTyped, roomID, resp.EventID, conversationID, chatwootMessageID)
-	if err != nil {
-		log.Error().Err(err).Msg("메시지 매핑 저장 실패")
-		// 저장 실패해도 전송은 된 상태이므로 오류 무시
-	}
-	return resp, nil
 }

@@ -29,7 +29,12 @@ func SetChatwootMessageIDForMatrixEvent(ctx context.Context, db *sql.DB, account
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() {
+		err := tx.Rollback()
+		if err != nil && err != sql.ErrTxDone {
+			zerolog.Ctx(ctx).Error().Err(err).Msg("tx.Rollback 에러")
+		}
+	}()
 
 	insert := `
 		INSERT INTO chatwoot_message_to_matrix_event (chatwoot_account_id, matrix_event_id, chatwoot_message_id)
@@ -60,7 +65,12 @@ func GetMatrixEventIDsForChatwootMessage(ctx context.Context, db *sql.DB, accoun
 		log.Err(err).Msg("failed to get Matrix event IDs for chatwoot message")
 		return eventIDs
 	}
-	defer rows.Close()
+	defer func() {
+		err := rows.Close()
+		if err != nil {
+			zerolog.Ctx(ctx).Error().Err(err).Msg("rows.Close 에러")
+		}
+	}()
 
 	var eventID id.EventID
 	for rows.Next() {
@@ -84,7 +94,12 @@ func GetChatwootMessageIDsForMatrixEventID(ctx context.Context, db *sql.DB, matr
 		log.Err(err).Msg("failed to get chatwoot message IDs for matrix event ID")
 		return nil, nil, err
 	}
-	defer rows.Close()
+	defer func() {
+		err := rows.Close()
+		if err != nil {
+			zerolog.Ctx(ctx).Error().Err(err).Msg("rows.Close 에러")
+		}
+	}()
 
 	var accountID int
 	var messageID chatwootapi.MessageID
@@ -112,7 +127,12 @@ func GetChatwootMessageIDsForMatrixEventIDWithAccount(ctx context.Context, db *s
 		log.Err(err).Msg("failed to get chatwoot message IDs for matrix event ID with specific account")
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() {
+		err := rows.Close()
+		if err != nil {
+			zerolog.Ctx(ctx).Error().Err(err).Msg("rows.Close 에러")
+		}
+	}()
 
 	var messageID chatwootapi.MessageID
 	for rows.Next() {
@@ -175,7 +195,12 @@ func StoreMatrixEventForChatwootMessage(ctx context.Context, db *sql.DB, account
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() {
+		err := tx.Rollback()
+		if err != nil && err != sql.ErrTxDone {
+			zerolog.Ctx(ctx).Error().Err(err).Msg("tx.Rollback 에러")
+		}
+	}()
 
 	insert := `
 		INSERT INTO chatwoot_message_to_matrix_event (chatwoot_account_id, chatwoot_message_id, matrix_event_id)
@@ -202,13 +227,18 @@ func DeleteMatrixEventForChatwootMessage(ctx context.Context, db *sql.DB, accoun
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() {
+		err := tx.Rollback()
+		if err != nil && err != sql.ErrTxDone {
+			zerolog.Ctx(ctx).Error().Err(err).Msg("tx.Rollback 에러")
+		}
+	}()
 
 	del := `
 		DELETE FROM chatwoot_message_to_matrix_event
-		 WHERE chatwoot_account_id = $1 AND chatwoot_conversation_id = $2 AND chatwoot_message_id = $3
+		 WHERE chatwoot_account_id = $1 AND chatwoot_message_id = $2
 	`
-	_, err = tx.ExecContext(ctx, del, int(accountID), int(conversationID), int(messageID))
+	_, err = tx.ExecContext(ctx, del, int(accountID), int(messageID))
 	if err != nil {
 		return fmt.Errorf("failed to delete matrix events for chatwoot message: %w", err)
 	}
