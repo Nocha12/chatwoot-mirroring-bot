@@ -16,7 +16,7 @@ import (
 )
 
 // SendMessage는 Matrix 방에 메시지를 전송하는 함수입니다.
-func (h *MessageHandler) SendMessage(ctx context.Context, roomID id.RoomID, content *event.MessageEventContent, extraContent ...map[string]any) (resp *mautrix.RespSendEvent, err error) {
+func (h *MessageHandler) SendMessage(ctx context.Context, client *mautrix.Client, roomID id.RoomID, content *event.MessageEventContent, extraContent ...map[string]any) (resp *mautrix.RespSendEvent, err error) {
 	lock, ok := h.RoomSendlocks[roomID]
 	if !ok {
 		lock = &sync.Mutex{}
@@ -47,7 +47,7 @@ func (h *MessageHandler) SendMessage(ctx context.Context, roomID id.RoomID, cont
 		}
 	}
 
-	return h.Client.SendMessageEvent(ctx, roomID, event.EventMessage, mergedContent)
+	return client.SendMessageEvent(ctx, roomID, event.EventMessage, mergedContent)
 }
 
 // HandleMessageCreated는 Chatwoot에서 메시지가 생성되었을 때 실행되는 핸들러입니다.
@@ -97,8 +97,13 @@ func (h *MessageHandler) HandleMessageCreated(ctx context.Context, mc chatwootap
 			return nil
 		}
 
+		matrixClient := h.GetMatrixClient(chatwootapi.AccountID(mc.Conversation.AccountID), chatwootapi.InboxID(mc.Conversation.InboxID))
+		if matrixClient == nil {
+			log.Error().Msg("Matrix 클라이언트를 찾을 수 없습니다")
+			return fmt.Errorf("matrix client not found")
+		}
 		// Matrix에서 메시지 삭제 (redact)
-		_, err = h.Client.RedactEvent(ctx, roomID, matrixEventID)
+		_, err = matrixClient.RedactEvent(ctx, roomID, matrixEventID)
 		if err != nil {
 			log.Error().Err(err).Msg("Matrix 메시지 삭제 실패")
 			return err
@@ -124,8 +129,14 @@ func (h *MessageHandler) HandleMessageCreated(ctx context.Context, mc chatwootap
 		return err
 	}
 
+	matrixClient := h.GetMatrixClient(accountID, chatwootapi.InboxID(mc.Conversation.InboxID))
+	if matrixClient == nil {
+		log.Error().Msg("Matrix 클라이언트를 찾을 수 없습니다")
+		return fmt.Errorf("matrix client not found")
+	}
+
 	// 방 존재 여부 검증
-	exists, err := h.validateRoomExists(ctx, roomID)
+	exists, err := h.validateRoomExists(ctx, matrixClient, roomID)
 	if err != nil {
 		log.Error().Err(err).Msg("방 존재 여부 확인 실패")
 		return err
@@ -158,7 +169,7 @@ func (h *MessageHandler) HandleMessageCreated(ctx context.Context, mc chatwootap
 
 		// 첫 번째 첨부파일만 처리 (여러 개 있을 경우 나머지는 추가 메시지로 전송 가능)
 		attachment := mc.ContentAttributes.Attachments[0]
-		sentEvent, err = h.handleAttachment(ctx, roomID, mc.ID, attachment)
+		sentEvent, err = h.handleAttachment(ctx, roomID, chatwootapi.AccountID(mc.Conversation.AccountID), chatwootapi.InboxID(mc.Conversation.InboxID), mc.ID, attachment)
 		if err != nil {
 			log.Error().Err(err).Msg("첨부파일 처리 실패")
 			// 첨부파일 처리 실패시에도 텍스트 메시지는 보낼 수 있도록 진행
@@ -177,7 +188,7 @@ func (h *MessageHandler) HandleMessageCreated(ctx context.Context, mc chatwootap
 
 	// 텍스트 메시지 전송 (첨부파일이 없거나, 첨부파일과 텍스트가 모두 있는 경우)
 	if sentEvent == nil || mc.Content != "" {
-		sentEvent, err = h.SendMessage(ctx, roomID, msgContent)
+		sentEvent, err = h.SendMessage(ctx, matrixClient, roomID, msgContent)
 		if err != nil {
 			log.Error().Err(err).Msg("Matrix 메시지 전송 실패")
 			return err
