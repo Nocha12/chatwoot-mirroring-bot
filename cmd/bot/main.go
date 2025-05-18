@@ -44,6 +44,9 @@ func main() {
 	// 방 동기화 락 초기화
 	roomSendlocks := NewRoomSendLocks()
 
+	// 종료 핸들러 설정
+	setup.SetupShutdownHandler(ctx, appSetup.Client, appSetup.CryptoHelper, appSetup.DB, log)
+
 	// Matrix 이벤트 핸들러 등록
 	SetupMatrixHandlers(ctx, appSetup, roomSendlocks)
 

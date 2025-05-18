@@ -15,37 +15,35 @@ import (
 
 // SetupMatrixHandlers는 Matrix 이벤트 핸들러를 설정합니다.
 func SetupMatrixHandlers(ctx context.Context, appSetup *setup.AppSetup, roomSendlocks RoomSendLocks) {
-	for _, client := range appSetup.MatrixClients {
-		// Matrix 어뎁터 생성
-		matrixClient := matrix.NewMautrixClientAdapter(client)
+	// Matrix 어뎁터 생성
+	matrixClient := matrix.NewMautrixClientAdapter(appSetup.Client)
 
-		// ChatwootAPIs를 func 형태로 변환
-		getChatwootAPI := func(accountID chatwootapi.AccountID) *chatwootapi.Client {
-			return appSetup.ChatwootAPIs[accountID]
-		}
-
-		// ConversationManager 생성
-		convManager := conversation.NewManager(matrixClient, appSetup.DB, getChatwootAPI, appSetup.DefaultAccountID, 100)
-
-		// MessageHelper 생성
-		messageHelper := matrix.NewMessageHelper(client, getChatwootAPI, false, appSetup.DB)
-
-		// Matrix 핸들러 생성
-		matrixHandler := matrix.NewMatrixHandler(
-			matrixClient,
-			appSetup.ChatwootAPIs,
-			appSetup.DefaultAccountID,
-			appSetup.DB,
-			messageHelper,
-			convManager,
-		)
-
-		// Syncer 가져오기
-		syncer := client.Syncer.(*mautrix.DefaultSyncer)
-
-		// 이벤트 핸들러 등록
-		registerEventHandlers(ctx, syncer, matrixHandler, client, appSetup.OCIProducer)
+	// ChatwootAPIs를 func 형태로 변환
+	getChatwootAPI := func(accountID chatwootapi.AccountID) *chatwootapi.Client {
+		return appSetup.ChatwootAPIs[accountID]
 	}
+
+	// ConversationManager 생성
+	convManager := conversation.NewManager(matrixClient, appSetup.DB, getChatwootAPI, appSetup.DefaultAccountID, 100)
+
+	// MessageHelper 생성
+	messageHelper := matrix.NewMessageHelper(appSetup.Client, getChatwootAPI, false, appSetup.DB)
+
+	// Matrix 핸들러 생성
+	matrixHandler := matrix.NewMatrixHandler(
+		matrixClient,
+		appSetup.ChatwootAPIs,
+		appSetup.DefaultAccountID,
+		appSetup.DB,
+		messageHelper,
+		convManager,
+	)
+
+	// Syncer 가져오기
+	syncer := appSetup.Client.Syncer.(*mautrix.DefaultSyncer)
+
+	// 이벤트 핸들러 등록
+	registerEventHandlers(ctx, syncer, matrixHandler, appSetup.Client, appSetup.OCIProducer)
 }
 
 // registerEventHandlers는 Matrix 이벤트 핸들러를 등록합니다.

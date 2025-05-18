@@ -9,7 +9,7 @@ import (
 	"github.com/sethvargo/go-retry"
 )
 
-func DoRetry[T any](ctx context.Context, action string, fn func(context.Context) (T, error)) (T, error) {
+func DoRetry[T interface{}](ctx context.Context, action string, fn func(context.Context) (T, error)) (T, error) {
 	var result T
 	var err error
 	log := zerolog.Ctx(ctx)
@@ -28,7 +28,7 @@ func DoRetry[T any](ctx context.Context, action string, fn func(context.Context)
 	return result, err
 }
 
-func DoRetryArr[T any](ctx context.Context, action string, fn func(context.Context) ([]T, error)) ([]T, error) {
+func DoRetryArr[T interface{}](ctx context.Context, action string, fn func(context.Context) ([]T, error)) ([]T, error) {
 	var result []T
 	var err error
 	log := zerolog.Ctx(ctx)

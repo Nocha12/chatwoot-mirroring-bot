@@ -9,7 +9,7 @@ import (
 )
 
 // DoRetry는 함수 실행을 재시도하는 범용 헬퍼 함수입니다.
-func DoRetry[T any](ctx context.Context, action string, fn func(context.Context) (T, error)) (T, error) {
+func DoRetry[T interface{}](ctx context.Context, action string, fn func(context.Context) (T, error)) (T, error) {
 	var result T
 	var err error
 	log := zerolog.Ctx(ctx)
@@ -29,7 +29,7 @@ func DoRetry[T any](ctx context.Context, action string, fn func(context.Context)
 }
 
 // DoRetryArr는 배열을 반환하는 함수에 대한 재시도 헬퍼 함수입니다.
-func DoRetryArr[T any](ctx context.Context, action string, fn func(context.Context) ([]T, error)) ([]T, error) {
+func DoRetryArr[T interface{}](ctx context.Context, action string, fn func(context.Context) ([]T, error)) ([]T, error) {
 	var result []T
 	var err error
 	log := zerolog.Ctx(ctx)

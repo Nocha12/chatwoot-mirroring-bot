@@ -18,7 +18,7 @@ func VerifyFromAuthorizedUser(ctx context.Context, sender id.UserID) bool {
 }
 
 // DoRetry는 지정된 작업을 재시도합니다.
-func DoRetry[T any](ctx context.Context, action string, fn func(context.Context) (T, error)) (T, error) {
+func DoRetry[T interface{}](ctx context.Context, action string, fn func(context.Context) (T, error)) (T, error) {
 	return util.DoRetry(ctx, action, fn)
 }
 
@@ -35,7 +35,7 @@ func SetupSignalHandler(ctx context.Context, appSetup *setup.AppSetup) {
 		syscall.SIGQUIT,
 		syscall.SIGTERM,
 	)
-	
+
 	go func() {
 		for range c { // 프로세스가 종료될 때
 			log.Info().Msg("정리 중...")

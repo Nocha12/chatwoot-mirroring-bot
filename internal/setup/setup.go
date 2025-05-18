@@ -12,7 +12,6 @@ import (
 	"github.com/rs/zerolog"
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/crypto/cryptohelper"
-	"maunium.net/go/mautrix/id"
 )
 
 // AppSetup는 애플리케이션 실행에 필요한 공유 객체를 담고 있습니다.
@@ -22,8 +21,6 @@ type AppSetup struct {
 	DB               *database.Database
 	Client           *mautrix.Client
 	CryptoHelper     *cryptohelper.CryptoHelper
-	MatrixClients    map[id.UserID]*mautrix.Client
-	CryptoHelpers    map[id.UserID]*cryptohelper.CryptoHelper
 	ChatwootAPIs     map[chatwootapi.AccountID]*chatwootapi.Client
 	DefaultAccountID chatwootapi.AccountID
 
@@ -81,40 +78,33 @@ func SetupApp(configPath string) (*AppSetup, error) {
 	}
 
 	// 5) Matrix 클라이언트 및 암호화 헬퍼 초기화
-	matrixClients := make(map[id.UserID]*mautrix.Client)
-	cryptoHelpers := make(map[id.UserID]*cryptohelper.CryptoHelper)
-	var client *mautrix.Client
-	var cryptoHelper *cryptohelper.CryptoHelper
+	var homeserver, user, password string
 
-	identityConfigs, err := queries.GetMatrixIdentities(ctx, db)
+	// 항상 데이터베이스 설정을 우선 사용
+	if runtimeCfg != nil && runtimeCfg.Password != "" {
+		// 데이터베이스에서 로드한 계정 정보 사용
+		homeserver = runtimeCfg.Homeserver
+		user = runtimeCfg.Username.String()
+		password = runtimeCfg.Password
+		log.Info().Msg("데이터베이스에서 로드한 Matrix 계정 정보를 사용합니다")
+	} else if cfg != nil {
+		// 설정 파일의 계정 정보 사용 (backup)
+		homeserver = cfg.Homeserver
+		user = cfg.Username.String()
+		pw, err := cfg.GetPassword(&log)
+		if err != nil {
+			// 비밀번호 파일이 없어도 계속 진행 (비어있는 비밀번호 사용)
+			log.Warn().Err(err).Msg("비밀번호 파일에서 Matrix 비밀번호를 가져올 수 없습니다")
+			pw = ""
+		}
+		password = pw
+		log.Info().Msg("설정 파일에서 로드한 Matrix 계정 정보를 사용합니다")
+	} else {
+		return nil, fmt.Errorf("Matrix 계정 정보를 데이터베이스나 설정 파일에서 찾을 수 없습니다")
+	}
+	client, cryptoHelper, err := SetupMatrixClient(homeserver, user, password, db, log)
 	if err != nil {
-		return nil, fmt.Errorf("matrix 계정 로드 실패: %w", err)
-	}
-
-	for _, ident := range identityConfigs {
-		if !ident.IsEnabled {
-			continue
-		}
-		pw, err := queries.DecryptMatrixPassword(ident, masterKey, &log)
-		if err != nil {
-			log.Error().Err(err).Int("identity_id", ident.ID).Msg("비밀번호 복호화 실패")
-			continue
-		}
-
-		c, h, err := SetupMatrixClient(ident.HomeserverURL, ident.UserID.String(), pw, db, log)
-		if err != nil {
-			return nil, err
-		}
-		matrixClients[ident.UserID] = c
-		cryptoHelpers[ident.UserID] = h
-		if client == nil {
-			client = c
-			cryptoHelper = h
-		}
-	}
-
-	if client == nil {
-		return nil, fmt.Errorf("활성화된 Matrix 계정이 없습니다")
+		return nil, err
 	}
 
 	// 6) Chatwoot API 클라이언트 맵 생성
@@ -171,11 +161,8 @@ func SetupApp(configPath string) (*AppSetup, error) {
 	}
 
 	// 10) 콜백 및 종료 핸들러 등록
-	for uid, helper := range cryptoHelpers {
-		SetupCallbacks(helper, log, db, apis, defaultAccID)
-		c := matrixClients[uid]
-		SetupShutdownHandler(ctx, c, helper, db, log)
-	}
+	SetupCallbacks(cryptoHelper, log, db, apis, defaultAccID)
+	SetupShutdownHandler(ctx, client, cryptoHelper, db, log)
 
 	// 11) AppSetup 조립 및 반환
 	app := &AppSetup{
@@ -183,8 +170,6 @@ func SetupApp(configPath string) (*AppSetup, error) {
 		DB:               db,
 		Client:           client,
 		CryptoHelper:     cryptoHelper,
-		MatrixClients:    matrixClients,
-		CryptoHelpers:    cryptoHelpers,
 		ChatwootAPIs:     apis,
 		DefaultAccountID: defaultAccID,
 		AccountMappings:  accountMappings,

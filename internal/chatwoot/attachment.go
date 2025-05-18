@@ -19,7 +19,7 @@ import (
 )
 
 // handleAttachment는 Chatwoot 첨부파일을 처리하여 Matrix에 전송하는 함수입니다.
-func (h *MessageHandler) handleAttachment(ctx context.Context, roomID id.RoomID, accountID chatwootapi.AccountID, inboxID chatwootapi.InboxID, chatwootMessageID chatwootapi.MessageID, chatwootAttachment chatwootapi.Attachment) (*mautrix.RespSendEvent, error) {
+func (h *MessageHandler) handleAttachment(ctx context.Context, roomID id.RoomID, chatwootMessageID chatwootapi.MessageID, chatwootAttachment chatwootapi.Attachment) (*mautrix.RespSendEvent, error) {
 	log := zerolog.Ctx(ctx).With().
 		Str("component", "handle_attachment").
 		Int("attachment_id", int(chatwootAttachment.ID)).
@@ -30,12 +30,6 @@ func (h *MessageHandler) handleAttachment(ctx context.Context, roomID id.RoomID,
 
 	// Chatwoot API 클라이언트 가져오기
 	api := h.GetAPI(chatwootapi.AccountID(chatwootAttachment.AccountID))
-
-	matrixClient := h.GetMatrixClient(accountID, inboxID)
-	if matrixClient == nil {
-		log.Error().Msg("Matrix 클라이언트를 찾을 수 없습니다")
-		return nil, fmt.Errorf("matrix client not found")
-	}
 
 	// 첨부파일 다운로드
 	log.Debug().Str("data_url", chatwootAttachment.DataURL).Msg("첨부파일 다운로드 시작")
@@ -79,7 +73,7 @@ func (h *MessageHandler) handleAttachment(ctx context.Context, roomID id.RoomID,
 	}
 
 	// 파일 업로드
-	uploadResp, err := matrixClient.UploadBytes(ctx, attachmentData, fileType)
+	uploadResp, err := h.Client.UploadBytes(ctx, attachmentData, fileType)
 	if err != nil {
 		log.Error().Err(err).Msg("Matrix 미디어 업로드 실패")
 		return nil, err
@@ -109,7 +103,7 @@ func (h *MessageHandler) handleAttachment(ctx context.Context, roomID id.RoomID,
 	}
 
 	// 메시지 전송
-	sentEvent, err := h.SendMessage(ctx, matrixClient, roomID, content)
+	sentEvent, err := h.SendMessage(ctx, roomID, content)
 	if err != nil {
 		log.Error().Err(err).Msg("첨부파일 메시지 전송 실패")
 		return nil, err

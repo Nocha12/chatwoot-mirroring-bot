@@ -49,7 +49,7 @@ func (m *ManagerImpl) createChatwootConversation(ctx context.Context, roomID id.
 		// Twitter 사용자 이름에 대한 특별한 처리
 		contactName := ""
 		if strings.HasPrefix(contactMXID.Localpart(), "twitter_") {
-			memberEventContent := map[string]any{}
+			memberEventContent := map[string]interface{}{}
 			if err := m.Client.StateEvent(ctx, roomID, event.StateMember, contactMXID.String(), &memberEventContent); err == nil {
 				log.Trace().Any("member_event_content", memberEventContent).Msg("Got member event content")
 				if identifiers, ok := memberEventContent["com.beeper.bridge.identifiers"]; ok {
@@ -148,5 +148,3 @@ func (m *ManagerImpl) createChatwootConversation(ctx context.Context, roomID id.
 		Msg("Chatwoot 대화 생성 및 연결 완료")
 	return conversation.ID, nil
 }
-
-

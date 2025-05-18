@@ -29,7 +29,7 @@ func GetOrCreateRoomLock(roomID id.RoomID) *sync.Mutex {
 }
 
 // SendMessage는 Matrix 방에 메시지를 전송합니다.
-func SendMessage(ctx context.Context, client MatrixClient, roomID id.RoomID, content *event.MessageEventContent, extraContent ...map[string]any) (*mautrix.RespSendEvent, error) {
+func SendMessage(ctx context.Context, client MatrixClient, roomID id.RoomID, content *event.MessageEventContent, extraContent ...map[string]interface{}) (*mautrix.RespSendEvent, error) {
 	log := zerolog.Ctx(ctx).With().Stringer("room_id", roomID).Logger()
 	ctx = log.WithContext(ctx)
 
@@ -74,7 +74,7 @@ func logError(ctx context.Context, err error, component string, msg string, fiel
 			}
 		}
 	}
-	
+
 	// logger.Logger()는 값을 반환하므로 Error() 포인터 메서드를 직접 호출할 수 없습니다.
 	// 대신 컨텍스트에서 로거를 가져와 사용합니다.
 	logObj := logger.Logger()
