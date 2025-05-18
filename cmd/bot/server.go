@@ -11,15 +11,23 @@ import (
 	"github.com/Nocha12/chatwoot-mirroring-bot/pkg/chatwootapi"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/hlog"
+	"maunium.net/go/mautrix"
 )
 
 // StartWebhookServer는 웹훅 서버를 시작합니다.
 func StartWebhookServer(ctx context.Context, appSetup *setup.AppSetup, roomSendlocks RoomSendLocks) {
 	log := zerolog.Ctx(ctx)
-	
+
 	// 웹훅 리스너 설정
 	messageHandler := chatwoot.NewMessageHandler(
-		appSetup.Client,
+		func(accID chatwootapi.AccountID, inboxID chatwootapi.InboxID) *mautrix.Client {
+			client, err := appSetup.MatrixClientForChatwootAccount(ctx, accID, inboxID)
+			if err != nil {
+				log.Error().Err(err).Msg("matrix client lookup failed")
+				return appSetup.Client
+			}
+			return client
+		},
 		appSetup.DB,
 		appSetup.ChatwootAPIs,
 		func(accountID chatwootapi.AccountID) *chatwootapi.Client {
@@ -44,7 +52,7 @@ func StartWebhookServer(ctx context.Context, appSetup *setup.AppSetup, roomSendl
 	http.Handle("/", handler)
 	http.Handle("/webhook", handler)
 	log.Info().Int("listen_port", appSetup.Config.HTTPListenPort).Msg("웹훅 리스너 시작 중")
-	
+
 	go func() {
 		err := http.ListenAndServe(fmt.Sprintf(":%d", appSetup.Config.HTTPListenPort), nil)
 		if err != nil {

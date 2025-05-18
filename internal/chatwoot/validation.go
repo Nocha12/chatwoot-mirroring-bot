@@ -10,13 +10,13 @@ import (
 )
 
 // validateRoomExists는 Matrix 방이 존재하는지 확인하는 함수입니다.
-func (h *MessageHandler) validateRoomExists(ctx context.Context, roomID id.RoomID) (bool, error) {
+func (h *MessageHandler) validateRoomExists(ctx context.Context, client *mautrix.Client, roomID id.RoomID) (bool, error) {
 	log := zerolog.Ctx(ctx)
 	log.Debug().Stringer("room_id", roomID).Msg("방 존재 여부 확인")
 
 	// 방의 암호화 상태 확인
 	var encState *event.EncryptionEventContent
-	err := h.Client.StateEvent(ctx, roomID, event.StateEncryption, "", &encState)
+	err := client.StateEvent(ctx, roomID, event.StateEncryption, "", &encState)
 	if err != nil {
 		// 404 오류면 방이 없거나 액세스할 수 없는 것
 		// 403 오류면 액세스할 수 없는 것 (초대되지 않음)
@@ -25,7 +25,7 @@ func (h *MessageHandler) validateRoomExists(ctx context.Context, roomID id.RoomI
 			log.Debug().Err(err).Str("error_code", httpErr.RespError.ErrCode).Msg("방이 존재하지 않거나 액세스할 수 없음")
 
 			// 방에 참여 시도
-			_, joinErr := h.Client.JoinRoomByID(ctx, roomID)
+			_, joinErr := client.JoinRoomByID(ctx, roomID)
 			if joinErr != nil {
 				log.Warn().Err(joinErr).Msg("방 참여 시도 실패")
 				return false, nil

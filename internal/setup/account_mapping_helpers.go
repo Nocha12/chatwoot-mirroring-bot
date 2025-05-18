@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/rs/zerolog"
+	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/id"
 
 	"github.com/Nocha12/chatwoot-mirroring-bot/pkg/chatwootapi"
@@ -205,4 +206,29 @@ func (app *AppSetup) GetAllActiveMappings(ctx context.Context) []*struct {
 
 	log.Debug().Int("mappings_count", len(result)).Msg("활성화된 계정 매핑 정보 조회 완료")
 	return result
+}
+
+// MatrixClientForChatwootAccount는 Chatwoot 계정/인박스에 매핑된 Matrix 클라이언트를 반환합니다.
+func (app *AppSetup) MatrixClientForChatwootAccount(
+	ctx context.Context,
+	accountID chatwootapi.AccountID,
+	inboxID chatwootapi.InboxID,
+) (*mautrix.Client, error) {
+	log := zerolog.Ctx(ctx).With().
+		Str("component", "matrix_client_for_chatwoot_account").
+		Int("chatwoot_account_id", int(accountID)).
+		Int("chatwoot_inbox_id", int(inboxID)).
+		Logger()
+
+	userID, err := app.MatrixUserIDForChatwootAccount(ctx, accountID, inboxID)
+	if err != nil {
+		return nil, err
+	}
+
+	client, ok := app.MatrixClients[userID]
+	if !ok {
+		return nil, fmt.Errorf("matrix client for %s not found", userID)
+	}
+	log.Debug().Str("matrix_user_id", string(userID)).Msg("Matrix 클라이언트 조회 완료")
+	return client, nil
 }
