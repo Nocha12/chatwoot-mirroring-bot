@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/rs/zerolog"
 	"maunium.net/go/mautrix"
@@ -166,8 +167,42 @@ func (h *MessageHelperImpl) HandleMatrixReaction(ctx context.Context, evt *event
 		Logger()
 
 	log.Debug().Msg("Matrix 리액션 처리 준비 중")
-	// TODO: 리액션 처리 로직 구현
-	log.Info().Msg("리액션 처리 기능은 아직 구현되지 않았습니다")
+
+	content, ok := evt.Content.Parsed.(*event.ReactionEventContent)
+	if !ok {
+		log.Warn().Msg("리액션 내용 파싱 실패")
+		return nil
+	}
+
+	conversationID, _, err := h.StateStore.GetChatwootMessageFromMatrixEvent(ctx, targetRoomID, targetEventID)
+	if err != nil {
+		log.Warn().Err(err).Stringer("target_event_id", targetEventID).Msg("Chatwoot 메시지 조회 실패")
+		return err
+	}
+
+	accountID, _, err := h.StateStore.GetAccountAndInboxIDForConversation(ctx, targetRoomID)
+	if err != nil {
+		log.Error().Err(err).Msg("계정 ID 조회 실패")
+		return err
+	}
+
+	api := h.GetAPIFunc(accountID)
+	emoji := strings.TrimPrefix(strings.TrimSuffix(content.RelatesTo.Key, ""), "")
+	message := fmt.Sprintf("(reacted with %s)", emoji)
+	sentMsg, err := api.Messages.SendTextMessage(ctx, conversationID, message, chatwootapi.IncomingMessage)
+	if err != nil {
+		log.Error().Err(err).Msg("Chatwoot 리액션 메시지 전송 실패")
+		return err
+	}
+
+	if err = h.StateStore.StoreMatrixEventToChatwootMessage(ctx, accountID, evt.ID, sentMsg.ID); err != nil {
+		log.Warn().Err(err).
+			Stringer("event_id", evt.ID).
+			Int("chatwoot_message_id", int(sentMsg.ID)).
+			Msg("리액션 매핑 저장 실패")
+	}
+
+	log.Info().Int("chatwoot_message_id", int(sentMsg.ID)).Str("emoji", emoji).Msg("리액션 처리 완료")
 	return nil
 }
 
@@ -180,8 +215,32 @@ func (h *MessageHelperImpl) HandleMatrixRedaction(ctx context.Context, evt *even
 		Logger()
 
 	log.Debug().Msg("Matrix 리덕션 처리 준비 중")
-	// TODO: 리덕션 처리 로직 구현
-	log.Info().Msg("리덕션 처리 기능은 아직 구현되지 않았습니다")
+
+	conversationID, chatwootMsgID, err := h.StateStore.GetChatwootMessageFromMatrixEvent(ctx, targetRoomID, targetEventID)
+	if err != nil {
+		log.Warn().Err(err).Stringer("target_event_id", targetEventID).Msg("Chatwoot 메시지 조회 실패")
+		return err
+	}
+
+	accountID, _, err := h.StateStore.GetAccountAndInboxIDForConversation(ctx, targetRoomID)
+	if err != nil {
+		log.Error().Err(err).Msg("계정 ID 조회 실패")
+		return err
+	}
+
+	api := h.GetAPIFunc(accountID)
+	if err = api.Messages.DeleteMessage(ctx, conversationID, chatwootMsgID); err != nil {
+		log.Error().Err(err).Msg("Chatwoot 메시지 삭제 실패")
+		return err
+	}
+
+	if err = h.StateStore.DeleteMatrixEventForChatwootMessage(ctx, accountID, chatwootMsgID); err != nil {
+		log.Warn().Err(err).
+			Int("chatwoot_message_id", int(chatwootMsgID)).
+			Msg("메시지 매핑 삭제 실패")
+	}
+
+	log.Info().Int("chatwoot_message_id", int(chatwootMsgID)).Msg("리덕션 처리 완료")
 	return nil
 }
 
