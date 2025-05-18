@@ -7,6 +7,7 @@ import (
 	"github.com/Nocha12/chatwoot-mirroring-bot/internal/config"
 	"github.com/Nocha12/chatwoot-mirroring-bot/internal/database"
 	"github.com/Nocha12/chatwoot-mirroring-bot/internal/database/queries"
+	"github.com/Nocha12/chatwoot-mirroring-bot/internal/oci"
 	"github.com/Nocha12/chatwoot-mirroring-bot/pkg/chatwootapi"
 	"github.com/rs/zerolog"
 	"maunium.net/go/mautrix"
@@ -30,6 +31,9 @@ type AppSetup struct {
 	AccountMappings  *config.AccountMappingManager
 	ChatwootConfigs  map[int]*config.RuntimeChatwootConfig // ID로 접근하기 위한 Chatwoot 설정 참조
 	MatrixIdentities map[int]*config.MatrixIdentityConfig  // ID로 접근하기 위한 Matrix 아이덴티티 참조
+
+	OCIProducer *oci.Producer
+	OCIConsumer *oci.Consumer
 }
 
 // SetupApp은 설정 파일(configPath) 유무에 따라 적절히 로딩 후
@@ -125,6 +129,9 @@ func SetupApp(configPath string) (*AppSetup, error) {
 		return nil, fmt.Errorf("matrix 아이덴티티 정보 로드 실패: %w", err)
 	}
 
+	// 8.5) OCI Streaming 초기화
+	producer, consumer := SetupOCIStreaming(cfg)
+
 	// 8) Chatwoot 설정 정보를 ID로 접근할 수 있는 맵으로 변환
 	chatwootConfigs := make(map[int]*config.RuntimeChatwootConfig)
 	if cfg == nil {
@@ -183,6 +190,8 @@ func SetupApp(configPath string) (*AppSetup, error) {
 		AccountMappings:  accountMappings,
 		ChatwootConfigs:  chatwootConfigs,
 		MatrixIdentities: matrixIdentities,
+		OCIProducer:      producer,
+		OCIConsumer:      consumer,
 	}
 	if cfg != nil {
 		app.Config = cfg

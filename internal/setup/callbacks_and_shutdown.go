@@ -143,7 +143,7 @@ var (
 )
 
 // loadAuthorizedUsers는 환경 변수에서 허용된 사용자 목록을 읽어옵니다.
-func loadAuthorizedUsers(log zerolog.Logger) {
+func loadAuthorizedUsers(log *zerolog.Logger) {
 	authorizedUsers = make(map[id.UserID]struct{})
 	if list := os.Getenv("AUTHORIZED_MATRIX_USERS"); list != "" {
 		for _, u := range strings.Split(list, ",") {

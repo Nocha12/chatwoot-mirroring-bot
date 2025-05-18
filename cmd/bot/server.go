@@ -39,7 +39,7 @@ func StartWebhookServer(ctx context.Context, appSetup *setup.AppSetup, roomSendl
 		},
 		roomSendlocks,
 	)
-	webhookHandler := chatwoot.NewWebhookHandler(messageHandler)
+	webhookHandler := chatwoot.NewWebhookHandler(messageHandler, appSetup.OCIProducer)
 
 	router := http.NewServeMux()
 	router.HandleFunc("/chatwoot", webhookHandler.HandleWebhook)

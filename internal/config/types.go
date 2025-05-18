@@ -29,6 +29,13 @@ type StartNewChat struct {
 	Token    string `yaml:"token"`
 }
 
+// OCIStreamingConfig는 OCI Streaming 연동을 위한 설정을 정의합니다.
+type OCIStreamingConfig struct {
+	Endpoint    string `yaml:"endpoint"`
+	Topic       string `yaml:"topic"`
+	Credentials string `yaml:"credentials"`
+}
+
 // ChatwootAccountConfig는 단일 Chatwoot 계정에 대한 설정을 정의합니다.
 type ChatwootAccountConfig struct {
 	BaseUrl         string                `yaml:"base_url,omitempty"`
@@ -40,12 +47,12 @@ type ChatwootAccountConfig struct {
 
 // DbConfiguration은 데이터베이스 설정만 포함하는 간소화된 설정 구조체입니다.
 type DbConfiguration struct {
-	Database dbutil.Config `yaml:"database"`
-	MasterEncryptionKeyFile string `yaml:"master_encryption_key_file"`
-	LogLevel  string `yaml:"log_level"`
-	LogJSON   bool   `yaml:"log_json"`
-	LogTime   bool   `yaml:"log_time"`
-	LogCaller bool   `yaml:"log_caller"`
+	Database                dbutil.Config `yaml:"database"`
+	MasterEncryptionKeyFile string        `yaml:"master_encryption_key_file"`
+	LogLevel                string        `yaml:"log_level"`
+	LogJSON                 bool          `yaml:"log_json"`
+	LogTime                 bool          `yaml:"log_time"`
+	LogCaller               bool          `yaml:"log_caller"`
 }
 
 // RuntimeConfig는 DB에서 불러온 설정과 실행시간에 필요한 추가 설정을 가지는 구조체입니다.
@@ -56,15 +63,15 @@ type RuntimeConfig struct {
 	AccessToken string
 	DeviceID    string
 
-	ChatwootBaseUrl string
+	ChatwootBaseUrl  string
 	ChatwootAccounts map[chatwootapi.AccountID]*RuntimeChatwootConfig
 
-	MaxMediaWidth       int
-	MaxMediaHeight      int
-	MaxMediaPixels      int
-	MaxMediaSize        int
-	MediaQuality        int
-	MediaConvertWEBP    bool
+	MaxMediaWidth    int
+	MaxMediaHeight   int
+	MaxMediaPixels   int
+	MaxMediaSize     int
+	MediaQuality     int
+	MediaConvertWEBP bool
 
 	Backfill            BackfillConfiguration
 	HomeserverWhitelist HomeserverWhitelist
@@ -87,11 +94,11 @@ type Configuration struct {
 	Username     id.UserID `yaml:"username"`
 	PasswordFile string    `yaml:"password_file"`
 
-	ChatwootBaseUrl string `yaml:"chatwoot_base_url"`
-	ChatwootAccessTokenFile string                `yaml:"chatwoot_access_token_file,omitempty"`
-	ChatwootAccountID       chatwootapi.AccountID `yaml:"chatwoot_account_id,omitempty"`
-	ChatwootInboxID         chatwootapi.InboxID   `yaml:"chatwoot_inbox_id,omitempty"`
-	ChatwootAccounts []ChatwootAccountConfig `yaml:"chatwoot_accounts,omitempty"`
+	ChatwootBaseUrl         string                  `yaml:"chatwoot_base_url"`
+	ChatwootAccessTokenFile string                  `yaml:"chatwoot_access_token_file,omitempty"`
+	ChatwootAccountID       chatwootapi.AccountID   `yaml:"chatwoot_account_id,omitempty"`
+	ChatwootInboxID         chatwootapi.InboxID     `yaml:"chatwoot_inbox_id,omitempty"`
+	ChatwootAccounts        []ChatwootAccountConfig `yaml:"chatwoot_accounts,omitempty"`
 
 	MasterEncryptionKeyFile string `yaml:"master_encryption_key_file"`
 
@@ -110,8 +117,10 @@ type Configuration struct {
 	LogCaller bool   `yaml:"log_caller"`
 
 	HomeserverWhitelist HomeserverWhitelist `yaml:"homeserver_whitelist"`
-	HTTPListenPort int `yaml:"http_listen_port"`
-	StartNewChat StartNewChat `yaml:"start_new_chat"`
+	HTTPListenPort      int                 `yaml:"http_listen_port"`
+	StartNewChat        StartNewChat        `yaml:"start_new_chat"`
+
+	OCIStreaming OCIStreamingConfig `yaml:"oci_streaming"`
 
 	Database dbutil.Config `yaml:"database"`
 }

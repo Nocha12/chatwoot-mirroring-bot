@@ -47,6 +47,9 @@ func main() {
 	// Matrix 이벤트 핸들러 등록
 	SetupMatrixHandlers(ctx, appSetup, roomSendlocks)
 
+	// 스트림 소비 루프 시작
+	StartConsumerLoop(ctx, appSetup)
+
 	// 백필 작업 시작
 	StartBackfillProcess(ctx, appSetup)
 
