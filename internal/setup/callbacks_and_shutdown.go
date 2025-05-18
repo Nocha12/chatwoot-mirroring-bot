@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -136,9 +137,42 @@ func SetupShutdownHandler(
 }
 
 // VerifyFromAuthorizedUser는 사용자가 적절한 권한을 가지고 있는지 확인합니다.
+var (
+	authorizedUsers     map[id.UserID]struct{}
+	authorizedUsersOnce sync.Once
+)
+
+// loadAuthorizedUsers는 환경 변수에서 허용된 사용자 목록을 읽어옵니다.
+func loadAuthorizedUsers(log zerolog.Logger) {
+	authorizedUsers = make(map[id.UserID]struct{})
+	if list := os.Getenv("AUTHORIZED_MATRIX_USERS"); list != "" {
+		for _, u := range strings.Split(list, ",") {
+			u = strings.TrimSpace(u)
+			if u != "" {
+				authorizedUsers[id.UserID(u)] = struct{}{}
+			}
+		}
+	}
+	log.Info().Int("authorized_users", len(authorizedUsers)).
+		Msg("허용된 사용자 목록 로드 완료")
+}
+
+// VerifyFromAuthorizedUser는 사용자가 적절한 권한을 가지고 있는지 확인합니다.
 func VerifyFromAuthorizedUser(ctx context.Context, sender id.UserID) bool {
-	// TODO: 권한 확인 로직 구현
-	return true
+	log := zerolog.Ctx(ctx)
+	authorizedUsersOnce.Do(func() { loadAuthorizedUsers(log) })
+
+	if len(authorizedUsers) == 0 {
+		// 목록이 비어 있으면 모두 허용
+		return true
+	}
+
+	if _, ok := authorizedUsers[sender]; ok {
+		return true
+	}
+
+	log.Warn().Str("sender", sender.String()).Msg("권한 없는 사용자 차단")
+	return false
 }
 
 // DoRetry는 함수 실행을 재시도합니다.
