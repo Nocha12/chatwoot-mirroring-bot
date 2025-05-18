@@ -27,3 +27,13 @@ repos:
       - id: zerolog-ban-global-log
       - id: zerolog-ban-msgf
       - id: zerolog-use-stringer
+  - repo: local
+    hooks:
+      - id: go-build
+        name: go build
+        entry: go build -o chatwoot ./cmd/bot
+        language: system
+      - id: golangci-lint
+        name: golangci-lint
+        entry: golangci-lint run ./...
+        language: system

@@ -41,3 +41,17 @@ support the feature
 ## Configuration
 
 See `example-config.yaml` for details about each config option.
+
+## Development
+
+Pull requests should pass a build and lint check before submission. Run the following commands in your environment:
+
+```bash
+# compile the bot
+go build -o chatwoot ./cmd/bot
+
+# run golangci-lint
+golangci-lint run ./...
+```
+
+These checks are also included in the pre-commit hooks.
