@@ -5,6 +5,7 @@ import (
 
 	"github.com/Nocha12/chatwoot-mirroring-bot/internal/conversation"
 	"github.com/Nocha12/chatwoot-mirroring-bot/internal/matrix"
+	"github.com/Nocha12/chatwoot-mirroring-bot/internal/oci"
 	"github.com/Nocha12/chatwoot-mirroring-bot/internal/setup"
 	"github.com/Nocha12/chatwoot-mirroring-bot/pkg/chatwootapi"
 	"github.com/rs/zerolog"
@@ -43,31 +44,43 @@ func SetupMatrixHandlers(ctx context.Context, appSetup *setup.AppSetup, roomSend
 		syncer := client.Syncer.(*mautrix.DefaultSyncer)
 
 		// 이벤트 핸들러 등록
-		registerEventHandlers(ctx, syncer, matrixHandler, client)
+		registerEventHandlers(ctx, syncer, matrixHandler, client, appSetup.OCIProducer)
 	}
 }
 
 // registerEventHandlers는 Matrix 이벤트 핸들러를 등록합니다.
-func registerEventHandlers(ctx context.Context, syncer *mautrix.DefaultSyncer, matrixHandler *matrix.MatrixHandler, client *mautrix.Client) {
+func registerEventHandlers(ctx context.Context, syncer *mautrix.DefaultSyncer, matrixHandler *matrix.MatrixHandler, client *mautrix.Client, producer *oci.Producer) {
 	// 메시지 이벤트 핸들러
 	syncer.OnEventType(event.EventMessage, func(ctx context.Context, evt *event.Event) {
 		log := zerolog.Ctx(ctx).With().Str("component", "matrix_message_handler").Logger()
 		ctx = log.WithContext(ctx)
-		matrixHandler.HandleMessage(ctx, evt)
+		if producer != nil {
+			_ = producer.Publish(ctx, oci.QueuedEvent{Type: oci.MatrixMessageEvent, MatrixEvent: evt})
+		} else {
+			matrixHandler.HandleMessage(ctx, evt)
+		}
 	})
 
 	// 리액션 이벤트 핸들러
 	syncer.OnEventType(event.EventReaction, func(ctx context.Context, evt *event.Event) {
 		log := zerolog.Ctx(ctx).With().Str("component", "matrix_reaction_handler").Logger()
 		ctx = log.WithContext(ctx)
-		matrixHandler.HandleReaction(ctx, evt)
+		if producer != nil {
+			_ = producer.Publish(ctx, oci.QueuedEvent{Type: oci.MatrixReactionEvent, MatrixEvent: evt})
+		} else {
+			matrixHandler.HandleReaction(ctx, evt)
+		}
 	})
 
 	// 삭제 이벤트 핸들러
 	syncer.OnEventType(event.EventRedaction, func(ctx context.Context, evt *event.Event) {
 		log := zerolog.Ctx(ctx).With().Str("component", "matrix_redaction_handler").Logger()
 		ctx = log.WithContext(ctx)
-		matrixHandler.HandleRedaction(ctx, evt)
+		if producer != nil {
+			_ = producer.Publish(ctx, oci.QueuedEvent{Type: oci.MatrixRedactionEvent, MatrixEvent: evt})
+		} else {
+			matrixHandler.HandleRedaction(ctx, evt)
+		}
 	})
 
 	// 초대 수락 핸들러

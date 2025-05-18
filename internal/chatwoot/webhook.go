@@ -8,19 +8,22 @@ import (
 
 	"github.com/rs/zerolog/hlog"
 
+	"github.com/Nocha12/chatwoot-mirroring-bot/internal/oci"
 	"github.com/Nocha12/chatwoot-mirroring-bot/pkg/chatwootapi"
 )
 
 // WebhookHandler는 Chatwoot 웹훅 요청을 처리하는 구조체입니다.
 type WebhookHandler struct {
 	// 의존성 주입을 위한 필드들
-	handler *MessageHandler
+	handler  *MessageHandler
+	producer *oci.Producer
 }
 
 // NewWebhookHandler는 새로운 WebhookHandler 인스턴스를 생성합니다.
-func NewWebhookHandler(handler *MessageHandler) *WebhookHandler {
+func NewWebhookHandler(handler *MessageHandler, producer *oci.Producer) *WebhookHandler {
 	return &WebhookHandler{
-		handler: handler,
+		handler:  handler,
+		producer: producer,
 	}
 }
 
@@ -82,14 +85,15 @@ func (h *WebhookHandler) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-
-		// Matrix 메시지 생성 처리를 비동기로 실행
-		go func() {
-			err := h.handler.HandleMessageCreated(ctx, mc)
-			if err != nil {
-				logger.Error().Err(err).Msg("메시지 생성 처리 실패")
-			}
-		}()
+		if h.producer != nil {
+			_ = h.producer.Publish(ctx, oci.QueuedEvent{Type: oci.ChatwootMessageEvent, ChatwootEvent: &mc})
+		} else {
+			go func() {
+				if err := h.handler.HandleMessageCreated(ctx, mc); err != nil {
+					logger.Error().Err(err).Msg("메시지 생성 처리 실패")
+				}
+			}()
+		}
 
 	default:
 		logger.Debug().Str("event_type", eventType).Msg("처리되지 않는 이벤트 타입")
