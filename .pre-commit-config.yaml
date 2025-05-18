@@ -31,7 +31,7 @@ repos:
     hooks:
       - id: go-build
         name: go build
-        entry: go build -o chatwoot ./cmd/bot
+        entry: go build -tags goolm -o chatwoot ./cmd/bot
         language: system
       - id: golangci-lint
         name: golangci-lint
