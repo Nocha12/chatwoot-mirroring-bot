@@ -16,7 +16,7 @@ import (
 )
 
 // SendMessage는 Matrix 방에 메시지를 전송하는 함수입니다.
-func (h *MessageHandler) SendMessage(ctx context.Context, roomID id.RoomID, content *event.MessageEventContent, extraContent ...map[string]any) (resp *mautrix.RespSendEvent, err error) {
+func (h *MessageHandler) SendMessage(ctx context.Context, roomID id.RoomID, content *event.MessageEventContent, extraContent ...map[string]interface{}) (resp *mautrix.RespSendEvent, err error) {
 	lock, ok := h.RoomSendlocks[roomID]
 	if !ok {
 		lock = &sync.Mutex{}

@@ -295,6 +295,6 @@ func VerifyFromAuthorizedUser(ctx context.Context, sender id.UserID) bool {
 	return setup.VerifyFromAuthorizedUser(ctx, sender)
 }
 
-func DoRetry[T any](ctx context.Context, action string, fn func(context.Context) (T, error)) (T, error) {
+func DoRetry[T interface{}](ctx context.Context, action string, fn func(context.Context) (T, error)) (T, error) {
 	return util.DoRetry(ctx, action, fn)
 }
