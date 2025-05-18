@@ -47,8 +47,8 @@ See `example-config.yaml` for details about each config option.
 Pull requests should pass a build and lint check before submission. Run the following commands in your environment:
 
 ```bash
-# compile the bot
-go build -o chatwoot ./cmd/bot
+# compile the bot using goolm (pure Go olm implementation)
+go build -tags goolm -o chatwoot ./cmd/bot
 
 # run golangci-lint
 golangci-lint run ./...

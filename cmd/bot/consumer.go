@@ -11,7 +11,6 @@ import (
 	"github.com/Nocha12/chatwoot-mirroring-bot/internal/setup"
 	"github.com/Nocha12/chatwoot-mirroring-bot/pkg/chatwootapi"
 	"github.com/rs/zerolog"
-	"maunium.net/go/mautrix"
 )
 
 // StartConsumerLoop 는 스트림에서 메시지를 읽어 기존 처리 로직을 호출합니다.
@@ -42,18 +41,17 @@ func StartConsumerLoop(ctx context.Context, appSetup *setup.AppSetup) {
 func handleQueuedEvent(ctx context.Context, appSetup *setup.AppSetup, evt oci.QueuedEvent) {
 	switch evt.Type {
 	case oci.MatrixMessageEvent:
-		for _, client := range appSetup.MatrixClients {
-			if evt.MatrixEvent != nil {
-				mh := matrix.NewMatrixHandler(
-					matrix.NewMautrixClientAdapter(client),
-					appSetup.ChatwootAPIs,
-					appSetup.DefaultAccountID,
-					appSetup.DB,
-					matrix.NewMessageHelper(client, func(id chatwootapi.AccountID) *chatwootapi.Client { return appSetup.ChatwootAPIs[id] }, false, appSetup.DB),
-					conversation.NewManager(matrix.NewMautrixClientAdapter(client), appSetup.DB, func(id chatwootapi.AccountID) *chatwootapi.Client { return appSetup.ChatwootAPIs[id] }, appSetup.DefaultAccountID, 100),
-				)
-				mh.HandleMessage(ctx, evt.MatrixEvent)
-			}
+		if evt.MatrixEvent != nil {
+			client := appSetup.Client
+			mh := matrix.NewMatrixHandler(
+				matrix.NewMautrixClientAdapter(client),
+				appSetup.ChatwootAPIs,
+				appSetup.DefaultAccountID,
+				appSetup.DB,
+				matrix.NewMessageHelper(client, func(id chatwootapi.AccountID) *chatwootapi.Client { return appSetup.ChatwootAPIs[id] }, false, appSetup.DB),
+				conversation.NewManager(matrix.NewMautrixClientAdapter(client), appSetup.DB, func(id chatwootapi.AccountID) *chatwootapi.Client { return appSetup.ChatwootAPIs[id] }, appSetup.DefaultAccountID, 100),
+			)
+			mh.HandleMessage(ctx, evt.MatrixEvent)
 		}
 	case oci.MatrixReactionEvent:
 		if evt.MatrixEvent != nil {
@@ -85,10 +83,7 @@ func handleQueuedEvent(ctx context.Context, appSetup *setup.AppSetup, evt oci.Qu
 	case oci.ChatwootMessageEvent:
 		if evt.ChatwootEvent != nil {
 			mh := chatwoot.NewMessageHandler(
-				func(acc chatwootapi.AccountID, inbox chatwootapi.InboxID) *mautrix.Client {
-					client, _ := appSetup.MatrixClientForChatwootAccount(ctx, acc, inbox)
-					return client
-				},
+				appSetup.Client,
 				appSetup.DB,
 				appSetup.ChatwootAPIs,
 				func(acc chatwootapi.AccountID) *chatwootapi.Client {
